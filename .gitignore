@@ -1,0 +1,19 @@
+# Generated output (rebuilt by running the script)
+US_Economic_Tracker.xlsx
+
+# Excel temp/lock files
+~$*.xlsx
+
+# PDF reports (copyrighted third-party documents)
+ISM and MNI Reports/*.pdf
+
+# Manual input log (auto-maintained, user-specific)
+ISM and MNI Reports/ISM_Manual_Input.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+.env

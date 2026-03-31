@@ -1,0 +1,418 @@
+================================================================================
+  US ECONOMIC INDICATORS TRACKER  v6
+  Automated macro dashboard — FRED API + ISM & MNI PDF parsing
+================================================================================
+
+OVERVIEW
+--------
+A Python script that:
+  1. Extracts ISM Manufacturing PMI, ISM Services PMI and Chicago PMI values
+     directly from the official PDF reports (no manual data entry required)
+  2. Fetches seven additional indicators live from the FRED API
+  3. Generates a polished Excel dashboard (US_Economic_Tracker.xlsx)
+     with signal classification, historical tables and trend charts
+
+Indicators covered:
+  Job Market          — Unemployment Rate, Initial Jobless Claims,
+                        Nonfarm Payrolls
+  Inflation           — CPI (YoY), Core CPI (YoY), PPI (MoM)
+  Economic Activities — ISM Manufacturing PMI, ISM Services PMI,
+                        Chicago PMI, Consumer Confidence
+
+
+PROJECT STRUCTURE
+-----------------
+  US Economic Tracker/
+  ├── economic_tracker.py                  ← main script (run this each month)
+  ├── US_Economic_Tracker.xlsx             ← generated output
+  ├── US_Economic_Tracker_TEMPLATE.xlsx    ← optional — your custom-formatted template
+  ├── READ-ME.txt                          ← this file
+  └── ISM and MNI Reports/
+      ├── ISM Manufacturing.pdf            ← replace each month with latest report
+      ├── ISM Services.pdf                 ← replace each month with latest report
+      ├── <MNI Chicago ...>.pdf            ← replace each month with latest report
+      └── ISM_Manual_Input.xlsx            ← auto-maintained data log
+
+All paths are relative to the script — the project folder is fully portable.
+Copy it to any machine and it will work without modification.
+
+
+================================================================================
+  TEMPLATE SYSTEM  —  Preserve Your Custom Formatting
+================================================================================
+
+By default the script builds US_Economic_Tracker.xlsx from scratch each month,
+which means any manual formatting changes you made in Excel will be overwritten.
+
+The template system solves this.  Once set up, the script updates only the data
+cells — your fonts, colours, column widths, chart styles and any other formatting
+survive every run untouched.
+
+HOW TO SET IT UP
+----------------
+  1. Run the script once normally (without a template) to generate the initial
+     US_Economic_Tracker.xlsx.
+
+  2. Open the file in Excel and format it however you like:
+       — Resize columns and rows
+       — Change fonts, colours and section backgrounds
+       — Reposition or reformat charts
+       — Adjust borders, alignment, number formats
+       — Add your own branding
+
+  3. Save a copy in the same folder as the script, named exactly:
+       US_Economic_Tracker_TEMPLATE.xlsx
+
+  4. From now on, every time you run the script it will detect the template,
+     load it, update the data, and save the result as US_Economic_Tracker.xlsx.
+     Your formatting is preserved automatically.
+
+WHAT IS UPDATED EACH RUN (IN TEMPLATE MODE)
+--------------------------------------------
+  These are always refreshed, regardless of template formatting:
+
+  ✔  All data values (latest readings from FRED and the PDFs)
+  ✔  Signal indicator colours  (green / amber / red — these ARE the data)
+  ✔  The "Last Refreshed" timestamp
+  ✔  Historical data tables
+  ✔  Chart data (the hidden _Chart Data sheet is fully rebuilt — all charts
+     update automatically since they reference this sheet by cell)
+
+WHAT IS PRESERVED FROM YOUR TEMPLATE
+--------------------------------------
+  ✔  Column widths and row heights
+  ✔  Section header colours and fonts
+  ✔  Background colours of non-signal cells
+  ✔  Chart visual styles (colours, line thickness, markers, axes)
+  ✔  Any additional formatting you have applied
+
+WHAT YOU SHOULD NOT CHANGE IN THE TEMPLATE
+-------------------------------------------
+  ✘  Cell positions — the script writes data to fixed row/column coordinates.
+     Moving cells around will cause data to land in the wrong place.
+  ✘  Merge ranges — the layout relies on specific merged cell regions.
+  ✘  Sheet names — the script looks for sheets named exactly "Executive Summary",
+     "Job Market", "Inflation" and "Economic Activities".
+
+IF THE TEMPLATE IS DELETED OR MISSING
+--------------------------------------
+  The script automatically falls back to a full build-from-scratch.
+  You will get a clean, correctly formatted workbook as normal.
+  This is the fail-safe — the template is always optional.
+
+SHIPPING THE PROJECT TO OTHERS
+--------------------------------
+  Include US_Economic_Tracker_TEMPLATE.xlsx in the project folder when you share
+  it.  Anyone who receives the folder gets your custom formatting out of the box
+  on every run.
+
+
+PDF NAMING CONVENTIONS
+-----------------------
+The script identifies report type from the filename (case-insensitive):
+
+  Report                     Filename must contain
+  ─────────────────────────────────────────────────
+  ISM Manufacturing PMI      manuf
+  ISM Services PMI           serv   or   non-manuf
+  MNI Chicago PMI            mni    or   barometer
+
+  Examples that will be detected correctly:
+    ISM Manufacturing.pdf
+    ISM Services.pdf
+    20260228.MNI_Chicago_Bus_Barometer_Press_2026_02.pdf
+
+  Tip: Simply overwrite the existing files with the new month's reports —
+  keeping the same filenames means you never need to think about this.
+
+
+PREREQUISITES
+-------------
+Python 3.8 or later
+  Download: https://python.org/downloads/
+
+Required packages (install once — see INSTALLATION below):
+  pdfplumber    PDF text extraction
+  openpyxl      Excel file generation
+  requests      FRED API calls
+
+
+================================================================================
+  INSTALLATION
+================================================================================
+
+WINDOWS
+-------
+1. Download and install Python from https://python.org/downloads/
+   IMPORTANT: On the first screen of the installer, tick
+   "Add Python to PATH" before clicking Install Now.
+
+2. Open Command Prompt or PowerShell and run:
+
+     pip install pdfplumber openpyxl requests
+
+   If pip is not found, try:
+
+     py -m pip install pdfplumber openpyxl requests
+
+3. Verify Python is working:
+
+     py --version
+
+
+MACOS
+-----
+1. macOS ships with Python 2.  Install Python 3 from https://python.org
+   or via Homebrew:
+
+     brew install python
+
+2. Install required packages:
+
+     pip3 install pdfplumber openpyxl requests
+
+3. Verify:
+
+     python3 --version
+
+
+LINUX
+-----
+1. Python 3 is usually pre-installed.  If not:
+
+     sudo apt install python3 python3-pip     # Debian / Ubuntu
+     sudo dnf install python3 python3-pip     # Fedora / RHEL
+
+2. Install required packages:
+
+     pip3 install pdfplumber openpyxl requests
+
+
+================================================================================
+  RUNNING THE SCRIPT
+================================================================================
+
+WINDOWS — Command Prompt (cmd.exe)
+-----------------------------------
+  cd "C:\Users\Joe\Downloads\US Economic Tracker"
+  py -3 economic_tracker.py
+
+WINDOWS — PowerShell
+---------------------
+  cd "C:\Users\Joe\Downloads\US Economic Tracker"
+  py -3 economic_tracker.py
+
+  Note: if 'py' is not recognised, use the full path:
+    & "C:\Users\Joe\AppData\Local\Programs\Python\Python3xx\python.exe" economic_tracker.py
+
+  To find the full path to Python:
+    where.exe py
+
+MACOS / LINUX — Terminal
+-------------------------
+  cd "/path/to/US Economic Tracker"
+  python3 economic_tracker.py
+
+  Note: on macOS you may need to allow the Terminal to access your Downloads
+  folder via System Preferences > Privacy & Security > Files and Folders.
+
+
+MONTHLY UPDATE WORKFLOW
+-----------------------
+  1. Download the latest PDF reports for the new month:
+       - ISM Manufacturing PMI  (ismworld.org, released 1st business day)
+       - ISM Services PMI       (ismworld.org, released 3rd business day)
+       - Chicago PMI            (MNI Indicators, released last business day)
+
+  2. Drop them into the 'ISM and MNI Reports' folder, overwriting the
+     previous month's files.
+
+  3. Run the script (see above).
+
+  4. Open US_Economic_Tracker.xlsx — all values are updated automatically.
+
+
+================================================================================
+  AUTOMATING THE SCRIPT
+================================================================================
+
+WINDOWS — Task Scheduler
+-------------------------
+Task Scheduler runs the script automatically on a schedule, even when
+no browser or terminal is open.
+
+  1. Open Task Scheduler  (search "Task Scheduler" in the Start menu)
+  2. Click "Create Basic Task" in the right-hand panel
+  3. Name:    US Economic Tracker Refresh
+  4. Trigger: Monthly — choose a day after the last business day
+              (e.g. 5th of each month at 09:00)
+  5. Action:  Start a Program
+
+     Program/script:
+       py.exe
+
+     Add arguments:
+       -3 "C:\Users\Joe\Downloads\US Economic Tracker\economic_tracker.py"
+
+     Start in (optional but recommended):
+       C:\Users\Joe\Downloads\US Economic Tracker
+
+  6. Click Finish, then right-click the new task and choose Run to test it.
+
+  To find the full path to py.exe if needed:
+    Open Command Prompt and run:  where py
+
+
+MACOS — launchd (recommended for Mac automation)
+--------------------------------------------------
+launchd is macOS's native scheduler.  It runs reliably in the background.
+
+  1. Open Terminal and create a new plist file:
+
+       nano ~/Library/LaunchAgents/com.econtracker.monthly.plist
+
+  2. Paste the following, replacing the paths with your actual paths:
+
+       <?xml version="1.0" encoding="UTF-8"?>
+       <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+         "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+       <plist version="1.0">
+       <dict>
+         <key>Label</key>
+         <string>com.econtracker.monthly</string>
+         <key>ProgramArguments</key>
+         <array>
+           <string>/usr/local/bin/python3</string>
+           <string>/Users/YourName/Downloads/US Economic Tracker/economic_tracker.py</string>
+         </array>
+         <key>WorkingDirectory</key>
+         <string>/Users/YourName/Downloads/US Economic Tracker</string>
+         <key>StartCalendarInterval</key>
+         <dict>
+           <key>Day</key>   <integer>5</integer>
+           <key>Hour</key>  <integer>9</integer>
+           <key>Minute</key><integer>0</integer>
+         </dict>
+         <key>StandardOutPath</key>
+         <string>/tmp/econtracker.log</string>
+         <key>StandardErrorPath</key>
+         <string>/tmp/econtracker.err</string>
+       </dict>
+       </plist>
+
+  3. Save (Ctrl+O, Enter, Ctrl+X) then load the schedule:
+
+       launchctl load ~/Library/LaunchAgents/com.econtracker.monthly.plist
+
+  4. To unload / disable:
+
+       launchctl unload ~/Library/LaunchAgents/com.econtracker.monthly.plist
+
+  To find your python3 path:  which python3
+
+
+MACOS / LINUX — cron
+---------------------
+cron is the traditional Unix scheduler, available on both macOS and Linux.
+
+  1. Open your crontab for editing:
+
+       crontab -e
+
+  2. Add this line (runs at 09:00 on the 5th of every month).
+     Replace the python3 path and script path with your actual paths:
+
+       0 9 5 * * /usr/local/bin/python3 "/Users/YourName/Downloads/US Economic Tracker/economic_tracker.py"
+
+  3. Save and exit (in vim: :wq   in nano: Ctrl+O, Enter, Ctrl+X).
+
+  To find your python3 path:  which python3
+
+  Note for macOS cron: macOS may require you to grant cron Full Disk Access.
+  Go to System Preferences > Privacy & Security > Full Disk Access and add
+  /usr/sbin/cron to the list.
+
+
+================================================================================
+  FRED API KEY
+================================================================================
+The script uses a free FRED (Federal Reserve Economic Data) API key.
+The key is already embedded in the script.
+
+If it stops working (rate limit, expiry, etc.):
+  1. Get a free key at: https://fred.stlouisfed.org/docs/api/api_key.html
+  2. Open economic_tracker.py in any text editor
+  3. On line ~20, replace the value of FRED_API_KEY with your new key:
+
+       FRED_API_KEY = "your_new_key_here"
+
+
+================================================================================
+  TROUBLESHOOTING
+================================================================================
+
+"py is not recognised" or "'py' is not an internal or external command"
+  Python is not in PATH.
+  Fix: Reinstall Python and tick "Add Python to PATH" during installation.
+  Alternative: use the full path to python.exe (run 'where python' to find it).
+
+"python3: command not found"  (macOS / Linux)
+  Try 'python' instead of 'python3'.
+  Or install Python 3 via the package manager (see INSTALLATION above).
+
+"ModuleNotFoundError: No module named 'pdfplumber'"
+  The required packages have not been installed.
+  Fix:  pip install pdfplumber openpyxl requests
+  Or:   py -m pip install pdfplumber openpyxl requests
+
+"PermissionError" when saving the Excel file
+  US_Economic_Tracker.xlsx is open in Excel.
+  Fix: Close the file in Excel, then re-run the script.
+
+"[WARN] Chicago PMI extraction failed: <filename>"
+  The filename does not contain 'mni' or 'barometer'.
+  Fix: Rename the file so it includes one of those keywords.
+  Alternative: Open ISM_Manual_Input.xlsx and enter the value manually.
+
+Values show "ADD PDF" in the spreadsheet
+  No matching PDF was found in the 'ISM and MNI Reports' folder.
+  Fix: Add the PDF with the correct filename keyword and re-run.
+
+Script runs but FRED values are blank or show [WARN]
+  The FRED API is unavailable, or the API key is invalid.
+  Fix: Check your internet connection, or replace FRED_API_KEY in the script.
+
+The Excel file looks different from expected
+  Ensure openpyxl is up to date: pip install --upgrade openpyxl
+  The 'Open Sans' font will fall back to Calibri if not installed — this is fine.
+
+
+================================================================================
+  MANUAL DATA ENTRY (FALLBACK)
+================================================================================
+If PDF extraction fails for any metric, you can enter the value manually:
+
+  1. Open:  ISM and MNI Reports\ISM_Manual_Input.xlsx
+  2. Add a new row at the bottom with:
+       Column B  Date in YYYY-MM-DD format  (e.g. 2026-03-01)
+       Column C  ISM Manufacturing PMI
+       Column D  ISM Non-Manufacturing PMI
+       Column E  Chicago PMI
+  3. Save and close the file
+  4. Re-run economic_tracker.py
+
+The script reads this file on every run. Manually entered values will not be
+overwritten unless a successful PDF extraction finds data for the same month.
+
+
+================================================================================
+  DATA SOURCES
+================================================================================
+  FRED API           https://fred.stlouisfed.org
+  ISM Reports        https://ismworld.org
+  MNI / Chicago PMI  https://www.mni-indicators.com
+  Python             https://python.org
+  pdfplumber         https://github.com/jsvine/pdfplumber
+  openpyxl           https://openpyxl.readthedocs.io
+
+================================================================================
