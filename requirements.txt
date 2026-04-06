@@ -1,0 +1,10 @@
+pdfplumber
+openpyxl
+requests
+pandas
+numpy
+statsmodels
+scipy
+flask
+flask-limiter
+gunicorn

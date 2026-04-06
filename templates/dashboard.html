@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>US Economic Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+<style>
+:root {
+  --bg:          #0b0b10;
+  --bg-card:     #131318;
+  --bg-card2:    #1a1a22;
+  --border:      #1e1e2a;
+  --text:        #f0f0f5;
+  --text-dim:    #6b7280;
+  --purple:      #8a2bd0;
+  --purple-dim:  #640394;
+  --teal:        #0e6655;
+  --green:       #1e8449;
+  --amber:       #d4870a;
+  --red:         #b03a2e;
+  --blue:        #2471a3;
+  /* regime colors */
+  --early-recovery: #1a6b3a;
+  --reflation:      #154360;
+  --stagflation:    #a04000;
+  --deflation:      #7b241c;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+  min-height: 100vh;
+  letter-spacing: -0.01em;
+}
+a { color: #7c8fff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+.container { max-width: 1400px; margin: 0 auto; padding: 2.5rem 3rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; }
+@media (max-width: 900px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+}
+@media (min-width: 901px) and (max-width: 1200px) {
+  .grid-3 { grid-template-columns: 1fr 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr; }
+}
+
+/* Card */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1.75rem;
+}
+.card-title {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  margin-bottom: 1rem;
+}
+.section-title {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 3.5rem 0 1.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin-bottom: 3rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--border);
+}
+.header h1 {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-size: 2.8rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  background: linear-gradient(135deg, #c084fc, #8a2bd0, #640394);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.header-meta {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-align: right;
+  letter-spacing: 0.04em;
+}
+
+/* Regime badge */
+.regime-badge {
+  display: inline-block;
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  padding: 0.5rem 1.25rem;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  color: #fff;
+}
+
+/* Signal dots */
+.dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.dot-expansionary  { background: var(--green); }
+.dot-neutral       { background: var(--amber); }
+.dot-contractionary { background: var(--red); }
+.dot-mixed_exp     { background: #27ae60; }
+.dot-mixed_con     { background: #e67e22; }
+.dot-mixed         { background: var(--amber); }
+
+/* Trend arrows */
+.trend-up   { color: var(--green); font-weight: 700; }
+.trend-down { color: var(--red);   font-weight: 700; }
+.trend-flat { color: var(--text-dim); }
+
+/* Score gauge */
+.gauge-track {
+  height: 10px;
+  background: var(--bg);
+  border-radius: 5px;
+  position: relative;
+  margin: 0.5rem 0;
+  overflow: hidden;
+}
+.gauge-fill {
+  position: absolute;
+  top: 0; height: 100%;
+  border-radius: 5px;
+  transition: width 0.5s ease;
+}
+.gauge-marker {
+  position: absolute;
+  top: -3px;
+  width: 3px; height: 16px;
+  background: #fff;
+  border-radius: 2px;
+  transform: translateX(-50%);
+}
+
+/* Probability bar */
+.prob-bar {
+  display: flex;
+  height: 32px;
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 0.75rem 0;
+}
+.prob-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #fff;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 4px;
+}
+
+/* Table */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.data-table th {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  text-align: left;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding: 0.8rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.data-table td {
+  padding: 0.7rem 0.6rem;
+  border-bottom: 1px solid rgba(30,30,42,0.5);
+}
+.data-table tr:hover { background: rgba(138,43,208,0.04); }
+.data-table .cat-header {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1rem 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.val { font-variant-numeric: tabular-nums; font-weight: 600; }
+.wt  { color: var(--text-dim); font-size: 0.75rem; }
+
+/* Sector bar chart labels */
+.sector-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.35rem;
+  font-size: 0.8rem;
+}
+.sector-name { width: 140px; flex-shrink: 0; }
+.sector-bar-track {
+  flex: 1;
+  height: 20px;
+  background: var(--bg);
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+}
+.sector-bar-fill {
+  position: absolute;
+  top: 0; height: 100%;
+  border-radius: 6px;
+  transition: width 0.4s ease;
+}
+.sector-pct {
+  width: 50px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  margin-left: 0.5rem;
+}
+
+/* Positioning */
+.pos-pill {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 5px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.04em;
+}
+
+/* Sparkline canvas */
+.sparkline { vertical-align: middle; }
+
+/* Error banner */
+.error-banner {
+  background: rgba(176, 58, 46, 0.1);
+  border: 1px solid var(--red);
+  border-radius: 10px;
+  padding: 1.1rem;
+  margin-bottom: 1.5rem;
+  color: #f5b7b1;
+  font-size: 0.85rem;
+}
+
+/* Loading */
+.loading {
+  text-align: center;
+  padding: 4rem;
+  color: var(--text-dim);
+  font-size: 1.1rem;
+}
+.loading::after {
+  content: '';
+  display: inline-block;
+  width: 20px; height: 20px;
+  border: 2px solid var(--purple);
+  border-top-color: transparent;
+  border-radius: 50%;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Factor cards */
+.factor-val {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-size: 2.2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.factor-sub {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.3rem;
+}
+
+/* Style factor list */
+.style-list {
+  list-style: none;
+  font-size: 0.85rem;
+}
+.style-list li {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid rgba(30,30,42,0.5);
+}
+.style-list li:last-child { border-bottom: none; }
+
+/* Methodology table */
+.meth-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.meth-table th {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  text-align: left; font-size: 0.68rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--text-dim); padding: 0.7rem 0.6rem; border-bottom: 1px solid var(--border);
+}
+.meth-table td { padding: 0.65rem 0.6rem; border-bottom: 1px solid rgba(30,30,42,0.5); vertical-align: top; }
+.meth-table tr:hover { background: rgba(138,43,208,0.04); }
+.rank-badge {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  display: inline-block; padding: 3px 10px; border-radius: 5px;
+  font-size: 0.65rem; font-weight: 700; color: #fff; letter-spacing: 0.04em;
+}
+.rank-HIGH { background: var(--green); }
+.rank-MEDIUM { background: var(--amber); }
+.rank-SUPPORTING { background: var(--text-dim); }
+
+/* Calendar table */
+.cal-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.cal-table th {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  text-align: left; font-size: 0.68rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim);
+  padding: 0.7rem 0.6rem; border-bottom: 1px solid var(--border);
+}
+.cal-table td { padding: 0.55rem 0.6rem; border-bottom: 1px solid rgba(30,30,42,0.5); }
+.cal-table tr:hover { background: rgba(138,43,208,0.04); }
+.pri-HIGH { font-family: 'Space Grotesk', 'Inter', sans-serif; background: var(--red); color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.63rem; font-weight: 700; letter-spacing: 0.04em; }
+.pri-MEDIUM { font-family: 'Space Grotesk', 'Inter', sans-serif; background: var(--amber); color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.63rem; font-weight: 700; letter-spacing: 0.04em; }
+.pri-LOW { font-family: 'Space Grotesk', 'Inter', sans-serif; background: var(--text-dim); color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.63rem; font-weight: 700; letter-spacing: 0.04em; }
+.days-urgent { color: var(--red); font-weight: 700; }
+.days-soon { color: var(--amber); font-weight: 600; }
+.pdf-row { background: rgba(212, 135, 10, 0.08); }
+
+/* Sortable table headers */
+th[data-sortable] {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 1.4em;
+  transition: color 0.15s;
+}
+th[data-sortable]:hover { color: var(--text); }
+th[data-sortable]::after {
+  content: '\21C5';
+  position: absolute;
+  right: 0.3em;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.7em;
+  opacity: 0.3;
+}
+th[data-sortable][data-sort-dir="asc"]::after {
+  content: '\25B2';
+  opacity: 1;
+  color: var(--purple);
+}
+th[data-sortable][data-sort-dir="desc"]::after {
+  content: '\25BC';
+  opacity: 1;
+  color: var(--purple);
+}
+
+/* Tooltip trigger */
+.has-tooltip {
+  cursor: help;
+  border-bottom: 1px dotted var(--text-dim);
+  position: relative;
+}
+.tooltip-popup {
+  display: none;
+  position: absolute; left: 0; top: 100%; z-index: 100;
+  background: var(--bg-card2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 1.1rem; width: 340px; max-height: 300px; overflow-y: auto;
+  font-size: 0.75rem; color: var(--text-dim); line-height: 1.6;
+  white-space: pre-wrap; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+}
+.has-tooltip:hover .tooltip-popup { display: block; }
+
+/* Chart toggle buttons */
+.chart-toggle-group { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.25rem; }
+.chart-toggle {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  padding: 0.4rem 0.85rem; border-radius: 8px; font-size: 0.72rem; font-weight: 600;
+  border: 1px solid var(--border); background: var(--bg-card2); color: var(--text-dim);
+  cursor: pointer; transition: all 0.2s; letter-spacing: 0.02em;
+}
+.chart-toggle.active { background: var(--purple); color: #fff; border-color: var(--purple); }
+.chart-toggle:hover { border-color: var(--purple); color: var(--text); }
+.chart-container { display: none; }
+.chart-container.visible { display: block; }
+.chart-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.5rem 0; border-top: 1px solid var(--border); margin-top: 0.5rem;
+}
+.chart-label { font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif; font-weight: 700; font-size: 0.9rem; color: var(--text); letter-spacing: -0.01em; }
+.chart-sublabel { font-weight: 400; color: var(--text-dim); font-size: 0.73rem; margin-left: 0.4rem; }
+.chart-toolbar { display: flex; gap: 0.4rem; }
+.chart-btn {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  padding: 0.3rem 0.7rem; border-radius: 6px; font-size: 0.68rem; font-weight: 600;
+  border: 1px solid var(--border); background: var(--bg-card2); color: var(--text-dim);
+  cursor: pointer; letter-spacing: 0.02em;
+}
+.chart-btn:hover { border-color: var(--purple); color: var(--text); }
+.chart-wrapper { position: relative; height: 280px; }
+
+/* Footer */
+.footer {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  padding: 3rem 0 1.5rem;
+  border-top: 1px solid var(--border);
+  margin-top: 3rem;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>US Economic Indicators Tracker</h1>
+      <div style="font-size:0.8rem; color:var(--text-dim); margin-top:0.25rem">
+        20 Indicators · 4 Categories · HMM Regime Detection
+      </div>
+    </div>
+    {% if data %}
+    <div class="header-meta">
+      <div>Last refreshed: {{ data.updated_at }}</div>
+      <div style="margin-top:0.4rem">
+        <span class="regime-badge" style="background:#{{ data.regime_color }}">
+          {{ data.regime }}
+        </span>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if error %}
+  <div class="error-banner">
+    Data refresh error: {{ error }}{% if data %} - showing cached data.{% endif %}
+  </div>
+  {% endif %}
+
+  {% if not data %}
+  <div class="loading">Loading economic data from FRED</div>
+  {% else %}
+
+  {% set desc_map = {
+    'unemployment_rate':  'Share of the labour force actively seeking work but unemployed',
+    'initial_claims':     'Weekly count of new unemployment benefit applications',
+    'nonfarm_payrolls':   'Net jobs added or lost across the economy each month',
+    'cpi_yoy':            'Year-on-year change in the price of a basket of consumer goods',
+    'core_cpi_yoy':       'Underlying inflation excluding volatile food and energy prices',
+    'ppi_mom':            'Monthly change in prices received by domestic producers',
+    'crb_yoy':            'Year-on-year change in a broad basket of commodity prices',
+    'ism_mfg':            'Survey of 300+ purchasing managers on manufacturing conditions',
+    'ism_svc':            'Survey of services sector purchasing managers (89% of GDP)',
+    'chicago_pmi':        'Regional manufacturing survey covering the US Midwest',
+    'consumer_conf':      'Household survey measuring confidence in the economy',
+    'hy_spread':          'Risk premium on high-yield corporate bonds over Treasuries',
+    'ig_spread':          'Risk premium on investment-grade corporate bonds over Treasuries',
+    't10y3m':             'Gap between 10-year and 3-month Treasury yields',
+    'building_permits':   'Year-on-year change in new housing construction permits',
+    'jolts_openings':     'Year-on-year change in total unfilled job vacancies',
+    'jolts_quits':        'Share of workers voluntarily leaving their jobs',
+    'breakeven_10y':      'Market-implied inflation expectation over the next 10 years',
+    'cfnai':              'Weighted average of 85 indicators measuring national economic activity',
+    'epu':                'Index of economic policy uncertainty from news, tax, and forecaster data'
+  } %}
+
+  <!-- ── Overview Cards ── -->
+  <div class="grid-4">
+    <!-- Macro Score -->
+    <div class="card">
+      <div class="card-title">Weighted Macro Score</div>
+      <div class="factor-val" style="color:{% if data.macro_score > 0.1 %}var(--green){% elif data.macro_score < -0.1 %}var(--red){% else %}var(--amber){% endif %}">
+        {{ '%+.2f'|format(data.macro_score) }}
+      </div>
+      <div class="gauge-track">
+        <div class="gauge-fill" style="left:0; width:100%; background: linear-gradient(90deg, var(--red), var(--amber), var(--green));"></div>
+        <div class="gauge-marker" style="left:{{ ((data.macro_score + 1) / 2 * 100)|round }}%"></div>
+      </div>
+      <div class="factor-sub">
+        Leading: {{ '%+.2f'|format(data.tier_scores.leading) }}
+        · Coincident: {{ '%+.2f'|format(data.tier_scores.coincident) }}
+        · Lagging: {{ '%+.2f'|format(data.tier_scores.lagging) }}
+      </div>
+      <div class="factor-sub" style="font-size:0.6rem; margin-top:0.15rem">
+        Leading predicts · Coincident confirms · Lagging validates
+      </div>
+    </div>
+
+    <!-- Forecast -->
+    <div class="card">
+      <div class="card-title">3-6 Month Outlook</div>
+      <div class="factor-val" style="color:#{{ data.forecast_color }}">
+        {{ data.forecast_label }}
+      </div>
+      <div class="factor-sub" style="margin-top:0.5rem">{{ data.forecast_summary }}</div>
+    </div>
+
+    <!-- Conviction -->
+    <div class="card">
+      <div class="card-title">Conviction Signal</div>
+      <div class="factor-val" style="color:#{{ data.conviction_color }}">
+        {{ data.conviction_label }}
+      </div>
+      <div class="factor-sub" style="margin-top:0.5rem">{{ data.conviction_desc }}</div>
+      <div class="factor-sub">Monetary stance: {{ data.monetary_stance }}</div>
+    </div>
+
+    <!-- Sahm Rule -->
+    <div class="card">
+      <div class="card-title">Sahm Rule Indicator</div>
+      {% if data.sahm_rule is not none %}
+      <div class="factor-val" style="color:{% if data.sahm_rule >= 0.5 %}var(--red){% elif data.sahm_rule >= 0.3 %}var(--amber){% else %}var(--green){% endif %}">
+        {{ '%.2f'|format(data.sahm_rule) }}
+      </div>
+      <div class="factor-sub">&ge; 0.50 = recession signal (triggered every recession since 1970)</div>
+      {% else %}
+      <div class="factor-val" style="color:var(--text-dim)">N/A</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── Methodology Ranking ── -->
+  {% if data.methodology %}
+  <div class="section-title">Methodology Ranking - Ordered by Predictive Importance</div>
+  <div class="card" style="overflow-x:auto">
+    <table class="meth-table" id="meth-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Methodology</th>
+          <th>Current Reading</th>
+          <th data-sortable data-col="3">Reliability</th>
+          <th>Description</th>
+          <th>Failure Modes</th>
+          <th>How to Interpret</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in data.methodology %}
+        <tr>
+          <td style="font-weight:700; color:var(--text-dim)">{{ m.rank }}</td>
+          <td style="font-weight:600">{{ m.name }}</td>
+          <td class="val">{{ m.reading }}</td>
+          <td data-sort-value="{{ {'HIGH':0,'MEDIUM':1,'SUPPORTING':2}[m.reliability]|default(2) }}"><span class="rank-badge rank-{{ m.reliability }}">{{ m.reliability }}</span></td>
+          <td style="color:var(--text-dim); max-width:200px">{{ m.desc }}</td>
+          <td style="color:var(--text-dim); max-width:200px">{{ m.fail }}</td>
+          <td style="max-width:200px">{{ m.interp }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- ── HMM Regime Probabilities ── -->
+  <div class="section-title">Regime Probability Distribution (HMM)</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">Current Regime: {{ data.regime }} ({{ data.hmm_confidence }}% confidence)</div>
+      {% if data.hmm_probs %}
+      <div class="prob-bar">
+        {% for regime, pct in data.hmm_probs.items() %}
+        {% if pct > 0 %}
+        <div class="prob-segment" style="width:{{ pct }}%; background:var(--{{ regime|lower|replace(' ', '-') }});"
+             title="{{ regime }}: {{ pct }}%">
+          {% if pct > 12 %}{{ regime }} {{ pct }}%{% elif pct > 6 %}{{ pct }}%{% endif %}
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% if data.transition_risk %}
+      <div style="color:var(--amber); font-size:0.8rem; font-weight:600; margin-top:0.5rem">
+        TRANSITION RISK - second-highest regime &gt; 30%
+      </div>
+      {% endif %}
+      {% else %}
+      <div style="color:var(--text-dim); font-size:0.85rem">HMM unavailable - using indicator vote</div>
+      {% endif %}
+      <div class="factor-sub" style="margin-top:0.5rem">{{ data.regime_desc }}</div>
+      <div class="factor-sub">
+        Equity outlook: {{ data.regime_equity[0] }}
+        {% if data.vote_regime != data.regime %}
+        · Indicator vote: {{ data.vote_regime }}
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- DFM Factor Scores -->
+    <div class="card">
+      <div class="card-title">DFM Factor Scores (3-Factor Model)</div>
+      <div class="grid-3" style="gap:0.75rem">
+        {% for fname, fdata in data.factor_scores.items() %}
+        <div style="text-align:center">
+          <div style="font-size:0.7rem; text-transform:uppercase; color:var(--text-dim); margin-bottom:0.3rem">{{ fname }}</div>
+          <div style="font-size:1.5rem; font-weight:700; font-variant-numeric:tabular-nums;
+                      color:{% if fdata.score > 0 %}var(--green){% elif fdata.score < 0 %}var(--red){% else %}var(--amber){% endif %}">
+            {{ '%+.2f'|format(fdata.score) }}
+          </div>
+          <div style="font-size:0.7rem; color:var(--text-dim)">
+            MoM: {{ '%+.2f'|format(fdata.momentum) }} · <span style="color:{% if fdata.signal in ('EXPANDING','SUPPORTIVE') %}var(--green){% elif fdata.signal in ('NEUTRAL','MODERATE') %}var(--amber){% else %}var(--red){% endif %}; font-weight:600">{{ fdata.signal }}</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Sector Playbook ── -->
+  <div class="section-title">Sector Playbook - {{ data.regime }}</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">Expected Annual Sector Returns (Invictus Research Backtest)</div>
+      {% for sector, ret in data.sectors %}
+      <div class="sector-row">
+        <span class="sector-name">{{ sector }}</span>
+        <div class="sector-bar-track">
+          {% if ret >= 0 %}
+          <div class="sector-bar-fill" style="left:50%; width:{{ (ret / 26 * 50)|round }}%; background:var(--green);"></div>
+          {% else %}
+          <div class="sector-bar-fill" style="right:50%; width:{{ (-ret / 26 * 50)|round }}%; background:var(--red);"></div>
+          {% endif %}
+        </div>
+        <span class="sector-pct" style="color:{% if ret > 0 %}var(--green){% elif ret < 0 %}var(--red){% else %}var(--text-dim){% endif %}">
+          {{ '%+d'|format(ret) }}%
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="card">
+      <div class="card-title">Style Factors - {{ data.monetary_stance }}</div>
+      <ul class="style-list">
+        {% for factor in data.style_factors %}
+        <li>{{ factor }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  <!-- ── Economic Calendar ── -->
+  {% if data.calendar %}
+  <div class="section-title">Upcoming Data Releases</div>
+  <div class="card" style="overflow-x:auto">
+    <table class="cal-table" id="cal-table">
+      <thead>
+        <tr>
+          <th data-sortable data-col="0">Priority</th>
+          <th data-sortable data-col="1">Indicator</th>
+          <th data-sortable data-col="2">Source</th>
+          <th>Next Release</th>
+          <th data-sortable data-col="4">Days</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in data.calendar %}
+        <tr class="{% if c.source == 'PDF' %}pdf-row{% endif %}">
+          <td data-sort-value="{{ {'HIGH':0,'MEDIUM':1,'LOW':2}[c.priority]|default(2) }}"><span class="pri-{{ c.priority }}">{{ c.priority }}</span></td>
+          <td data-sort-value="{{ c.name|lower }}" style="font-weight:{% if c.source == 'PDF' %}700{% else %}400{% endif %}">{{ c.name }}</td>
+          <td data-sort-value="{{ 0 if c.source == 'PDF' else 1 }}" style="font-size:0.75rem; color:var(--text-dim)">{{ c.source }}</td>
+          <td>{{ c.date }}</td>
+          <td data-sort-value="{{ c.days }}" class="{% if c.days <= 3 %}days-urgent{% elif c.days <= 7 %}days-soon{% endif %}">
+            {{ c.days }}d
+          </td>
+          <td style="font-size:0.75rem">
+            {% if c.source == 'PDF' %}
+              <span style="color:var(--amber); font-weight:600">⚠ Add PDF to Reports/</span>
+            {% else %}
+              Auto-updated via FRED
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- ── Indicators Table ── -->
+  <div class="section-title">All Indicators (20)</div>
+  <div class="card" style="overflow-x:auto">
+    <table class="data-table" id="indicators-table">
+      <thead>
+        <tr>
+          <th>Indicator</th>
+          <th>Unit</th>
+          <th style="text-align:right">Value</th>
+          <th data-sortable data-col="3">Signal</th>
+          <th>Impact</th>
+          <th data-sortable data-col="5" style="text-align:center">Wt</th>
+          <th data-sortable data-col="6">Type</th>
+          <th data-sortable data-col="7" style="text-align:center">Trend</th>
+          <th style="text-align:center">12M</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set ns = namespace(last_cat='') %}
+        {% for ind in data.indicators %}
+          {% if ind.category != ns.last_cat %}
+            {% set ns.last_cat = ind.category %}
+            <tr data-cat-header>
+              <td colspan="9" class="cat-header"
+                  style="color:#{% if ind.category == 'Job Market' %}8a2bd0{% elif ind.category == 'Inflation' %}a957e8{% elif ind.category == 'Economic Activities' %}c98cff{% else %}0e6655{% endif %}">
+                {{ ind.category }}
+              </td>
+            </tr>
+          {% endif %}
+          <tr>
+            <td>
+              {% if ind.key in data.tooltips %}
+              <span class="has-tooltip">{{ ind.name }}
+                <span class="tooltip-popup">{{ data.tooltips[ind.key] }}</span>
+              </span>
+              {% else %}
+              {{ ind.name }}
+              {% endif %}
+            </td>
+            <td style="font-size:0.75rem; color:var(--text-dim)">{{ ind.unit }}</td>
+            <td class="val" style="text-align:right; color:{% if ind.signal == 'expansionary' %}var(--green){% elif ind.signal == 'contractionary' %}var(--red){% else %}var(--amber){% endif %}">
+              {% if ind.value is not none %}
+                {{ '%.2f'|format(ind.value) }}
+              {% else %}
+                <span style="color:var(--amber); font-size:0.75rem">Pending</span>
+              {% endif %}
+            </td>
+            <td data-sort-value="{{ {'contractionary':0,'mixed_con':1,'neutral':2,'mixed':2,'mixed_exp':3,'expansionary':4}[ind.signal]|default(2) }}">
+              <span class="dot dot-{{ ind.signal }}"></span>
+              {{ ind.signal|replace('_', ' ')|title }}
+            </td>
+            <td style="font-size:0.75rem; color:var(--text-dim); max-width:260px">{{ ind.impact }}</td>
+            <td data-sort-value="{{ ind.weight }}" style="text-align:center" class="wt">{{ ind.weight }}x</td>
+            <td data-sort-value="{{ {'Leading':0,'Coincident':1,'Lagging':2}[ind.type]|default(2) }}" style="font-size:0.75rem">
+              <span class="has-tooltip">{{ ind.type }}
+                <span class="tooltip-popup">{% if ind.type == 'Leading' %}Predicts future economic conditions 3-12 months ahead. Changes here signal what is coming.{% elif ind.type == 'Coincident' %}Moves in real time with the economy. Confirms what is happening now.{% else %}Confirms what has already happened. Changes here are backward-looking.{% endif %}</span>
+              </span>
+            </td>
+            <td data-sort-value="{{ {'down':0,'flat':1,'up':2}[ind.trend]|default(1) }}" style="text-align:center">
+              {% if ind.trend == 'up' %}<span class="trend-up">&#9650;</span>
+              {% elif ind.trend == 'down' %}<span class="trend-down">&#9660;</span>
+              {% else %}<span class="trend-flat">&rarr;</span>{% endif %}
+            </td>
+            <td style="text-align:center">
+              {% if ind.history %}
+              <canvas class="sparkline" width="80" height="24"
+                      data-values="{{ ind.history|join(',') }}"></canvas>
+              {% else %}-{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── Market Positioning ── -->
+  <div class="section-title">Market Positioning</div>
+  <div class="card">
+    <div class="card-title">
+      Overall: <span class="pos-pill" style="background:#{{ data.pos_color }}">{{ data.pos_overall }}</span>
+    </div>
+    <table class="data-table" id="positioning-table">
+      <thead>
+        <tr>
+          <th>Indicator</th>
+          <th data-sortable data-col="1">Value</th>
+          <th data-sortable data-col="2">Signal</th>
+          <th>Assessment</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in data.positioning %}
+        <tr>
+          <td>{{ p.name }}</td>
+          <td data-sort-value="{{ p.value if p.value is not none else 99999 }}" class="val">{{ p.value if p.value is not none else 'N/A' }}</td>
+          <td data-sort-value="{{ {'extreme_fear':0,'elevated':1,'tight':1,'stress':1,'inverted':1,'neutral':5,'flat':5,'complacent':7,'calm':7,'loose':7,'benign':7,'easing':7,'normal':7}[p.signal]|default(5) }}">
+            <span class="pos-pill" style="background:{% if p.signal in ('extreme_fear','elevated','tight','stress','inverted') %}var(--red){% elif p.signal in ('complacent','calm','loose','benign','easing','normal') %}var(--green){% else %}var(--amber){% endif %}">
+              {{ p.label }}
+            </span>
+          </td>
+          <td style="font-size:0.75rem; color:var(--text-dim)">{{ p.impact }}</td>
+          <td style="font-size:0.75rem">{{ p.action }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── Category Charts (Toggleable) ── -->
+  <div class="section-title">Indicator History - Click to view charts</div>
+  <div class="card">
+    <div class="card-title">Select indicators to display</div>
+    <div class="chart-toggle-group">
+      {% for ind in data.indicators %}
+        {% if ind.history %}
+        <button class="chart-toggle" data-chart-id="ind-chart-{{ loop.index0 }}"
+                onclick="toggleChart(this)">{{ ind.name }}</button>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% for ind in data.indicators %}
+      {% if ind.history %}
+      <div class="chart-container" id="ind-chart-{{ loop.index0 }}">
+        <div class="chart-header">
+          <div>
+            <span class="chart-label">{{ ind.name }}</span>
+            <span class="dot dot-{{ ind.signal }}" style="margin-left:0.5rem"></span>
+            <span class="chart-sublabel">{{ ind.category }} · {{ ind.type }} · {{ desc_map.get(ind.key, '') }}</span>
+          </div>
+          <div class="chart-toolbar">
+            <button class="chart-btn" onclick="resetZoom('ind-chart-{{ loop.index0 }}')">Reset Zoom</button>
+            <button class="chart-btn" onclick="togglePoints('ind-chart-{{ loop.index0 }}')">Toggle Points</button>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <canvas id="single-chart-{{ loop.index0 }}"></canvas>
+        </div>
+      </div>
+      {% endif %}
+    {% endfor %}
+    <div id="no-chart-msg" style="color:var(--text-dim); font-size:0.85rem; padding:2rem; text-align:center">
+      Click any indicator above to display its chart
+    </div>
+  </div>
+
+  <div class="footer">
+    US Economic Indicators Tracker ·
+    Data: <a href="https://fred.stlouisfed.org" target="_blank" rel="noopener">FRED</a> · ISM · MNI Indicators ·
+    Regime framework: Invictus Research ·
+    Auto-refreshes daily
+  </div>
+
+  {% endif %}
+</div>
+
+{% if data %}
+<script>
+// ── Sparklines ──
+document.querySelectorAll('.sparkline').forEach(canvas => {
+  const vals = canvas.dataset.values.split(',').map(Number);
+  if (!vals.length) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  const range = mx - mn || 1;
+  const pad = 2;
+
+  ctx.beginPath();
+  ctx.strokeStyle = '#8a2bd0';
+  ctx.lineWidth = 1.5;
+  vals.forEach((v, i) => {
+    const x = pad + (i / (vals.length - 1)) * (w - 2 * pad);
+    const y = h - pad - ((v - mn) / range) * (h - 2 * pad);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+});
+
+// ── Toggleable Individual Charts ──
+const indicators = {{ data.indicators | tojson }};
+const signalPalette = {
+  expansionary:   { line: '#1e8449', fill: 'rgba(30,132,73,0.10)',  dark: '#145a32' },
+  mixed_exp:      { line: '#27ae60', fill: 'rgba(39,174,96,0.10)',  dark: '#1a7a42' },
+  neutral:        { line: '#d4870a', fill: 'rgba(212,135,10,0.10)', dark: '#9a6200' },
+  mixed:          { line: '#d4870a', fill: 'rgba(212,135,10,0.10)', dark: '#9a6200' },
+  mixed_con:      { line: '#e67e22', fill: 'rgba(230,126,34,0.10)', dark: '#a35a18' },
+  contractionary: { line: '#b03a2e', fill: 'rgba(176,58,46,0.10)', dark: '#78281f' },
+};
+const defaultPalette = { line: '#d4870a', fill: 'rgba(212,135,10,0.10)', dark: '#9a6200' };
+const chartInstances = {};
+
+function closeAllCharts() {
+  document.querySelectorAll('.chart-container.visible').forEach(c => {
+    c.classList.remove('visible');
+    const cid = c.id;
+    if (chartInstances[cid]) { chartInstances[cid].destroy(); delete chartInstances[cid]; }
+  });
+  document.querySelectorAll('.chart-toggle.active').forEach(b => b.classList.remove('active'));
+}
+
+function toggleChart(btn) {
+  const id = btn.dataset.chartId;
+  const container = document.getElementById(id);
+  const wasVisible = container.classList.contains('visible');
+
+  // Close all charts first (mutual exclusivity)
+  closeAllCharts();
+
+  // If it was already open, just close it (toggle off)
+  if (wasVisible) {
+    document.getElementById('no-chart-msg').style.display = 'block';
+    return;
+  }
+
+  // Open the clicked chart
+  container.classList.add('visible');
+  btn.classList.add('active');
+  document.getElementById('no-chart-msg').style.display = 'none';
+
+  const idx = parseInt(id.replace('ind-chart-', ''));
+  const ind = indicators.filter(d => d.history.length > 0)[idx];
+  if (!ind) return;
+
+  const canvas = document.getElementById('single-chart-' + idx);
+  const labels = Array.from({length: ind.history.length}, (_, i) => 'M' + (i + 1));
+  const pal = signalPalette[ind.signal] || defaultPalette;
+
+  chartInstances[id] = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: ind.name,
+        data: ind.history,
+        borderColor: pal.line,
+        backgroundColor: pal.fill,
+        borderWidth: 2.5,
+        pointRadius: 3,
+        pointHitRadius: 12,
+        pointBackgroundColor: pal.line,
+        tension: 0.3,
+        fill: 'origin',
+        segment: {
+          borderColor: function(ctx) {
+            return ctx.p1.parsed.y < 0 ? pal.dark : pal.line;
+          },
+          backgroundColor: function(ctx) {
+            return ctx.p1.parsed.y < 0 ? pal.dark + '18' : pal.fill;
+          }
+        }
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1a1a24', borderColor: '#2a2a3a', borderWidth: 1,
+          titleColor: '#e8eaed', bodyColor: '#e8eaed', padding: 12,
+          displayColors: false,
+          callbacks: {
+            title: function(items) { return items[0]?.label || ''; },
+            label: function(ctx) { return ctx.dataset.label + ':  ' + ctx.parsed.y; }
+          }
+        },
+        zoom: {
+          pan: { enabled: true, mode: 'x', modifierKey: null },
+          zoom: {
+            wheel: { enabled: true },
+            pinch: { enabled: true },
+            mode: 'x'
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#9ca3af', font: { size: 10 } }, grid: { display: false } },
+        y: {
+          ticks: { color: '#9ca3af', font: { size: 10 } },
+          grid: { color: 'rgba(42,42,58,0.5)' },
+          border: { display: false }
+        }
+      }
+    }
+  });
+}
+
+function resetZoom(chartId) {
+  if (chartInstances[chartId]) chartInstances[chartId].resetZoom();
+}
+
+function togglePoints(chartId) {
+  const chart = chartInstances[chartId];
+  if (!chart) return;
+  const ds = chart.data.datasets[0];
+  ds.pointRadius = ds.pointRadius === 0 ? 4 : 0;
+  chart.update();
+}
+
+// ── Sortable Table Headers ──
+(function() {
+  'use strict';
+  const originals = new WeakMap();
+
+  function storeOriginal(tbody) {
+    if (!originals.has(tbody)) {
+      originals.set(tbody, Array.from(tbody.rows));
+    }
+  }
+
+  function clearSortIndicators(thead) {
+    thead.querySelectorAll('th[data-sort-dir]').forEach(th => th.removeAttribute('data-sort-dir'));
+  }
+
+  function sortTable(tableEl, colIndex, th) {
+    const thead = tableEl.querySelector('thead');
+    const tbody = tableEl.querySelector('tbody');
+    storeOriginal(tbody);
+
+    const currentDir = th.getAttribute('data-sort-dir');
+    clearSortIndicators(thead);
+
+    // Third click: restore original order
+    if (currentDir === 'desc') {
+      th.removeAttribute('data-sort-dir');
+      const orig = originals.get(tbody);
+      tbody.innerHTML = '';
+      orig.forEach(row => tbody.appendChild(row));
+      return;
+    }
+
+    const newDir = currentDir === 'asc' ? 'desc' : 'asc';
+    th.setAttribute('data-sort-dir', newDir);
+
+    // Get data rows only (exclude category headers)
+    const rows = Array.from(tbody.rows).filter(r => !r.hasAttribute('data-cat-header'));
+
+    // Hide category headers while sorted
+    tbody.querySelectorAll('[data-cat-header]').forEach(r => r.remove());
+
+    rows.sort((a, b) => {
+      const aVal = a.cells[colIndex]?.getAttribute('data-sort-value') ?? '';
+      const bVal = b.cells[colIndex]?.getAttribute('data-sort-value') ?? '';
+      const aNum = parseFloat(aVal), bNum = parseFloat(bVal);
+      let cmp = (!isNaN(aNum) && !isNaN(bNum)) ? aNum - bNum : aVal.localeCompare(bVal);
+
+      // Tiebreak: calendar priority → alphabetical by indicator name (col 1)
+      if (cmp === 0 && tableEl.id === 'cal-table' && colIndex === 0) {
+        const aName = a.cells[1]?.getAttribute('data-sort-value') ?? '';
+        const bName = b.cells[1]?.getAttribute('data-sort-value') ?? '';
+        cmp = aName.localeCompare(bName);
+      }
+      return newDir === 'desc' ? -cmp : cmp;
+    });
+
+    tbody.innerHTML = '';
+    rows.forEach(row => tbody.appendChild(row));
+  }
+
+  document.querySelectorAll('th[data-sortable]').forEach(th => {
+    th.addEventListener('click', function() {
+      const table = th.closest('table');
+      const colIndex = parseInt(th.getAttribute('data-col'), 10);
+      sortTable(table, colIndex, th);
+    });
+  });
+})();
+</script>
+{% endif %}
+</body>
+</html>

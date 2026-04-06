@@ -73,30 +73,52 @@ EXCEL OUTPUT (7 SHEETS)
      (tick "Add Python to PATH" during installation)
 
   2. Install required packages:
-       pip install pdfplumber openpyxl requests pandas numpy statsmodels
+       pip install -r requirements.txt
 
      Optional (for toast notifications):
        pip install plyer
 
-  3. Drop ISM/MNI PDF reports into the Reports/ folder
+  3. Set up your FRED API key:
+       Copy .env.example to .env and paste your key
+       Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html
 
-  4. Run:
+  4. Drop ISM/MNI PDF reports into the data/pdfs/ folder
+
+  5. Run the Excel tracker:
        py -3 economic_tracker.py
 
-  5. Open US_Economic_Tracker.xlsx
+  6. Or run the web dashboard:
+       Double-click run_dashboard.bat
+       Or: py -3 web_dashboard.py (then open http://localhost:5000)
+
+  7. Output saved to output/US_Economic_Tracker.xlsx
 
 
 ================================================================================
   AUTO-SCHEDULING
 ================================================================================
 
-Run daily at 7:00 AM automatically:
+Run the setup script to configure daily background updates:
 
-  py -3 economic_tracker.py --schedule 07:00
+  py -3 automation/setup_daemon.py
 
-This creates a Windows Task Scheduler task. To remove it:
+This auto-detects your OS and sets it up:
+  - Windows: VBS launcher in Startup folder (starts on login, runs hidden)
+  - macOS: launchd service (starts on login, auto-restarts on failure)
+  - Linux: systemd user service (starts on login, auto-restarts on failure)
 
-  py -3 economic_tracker.py --unschedule
+Options:
+
+  py -3 automation/setup_daemon.py --time 08:30    Custom time (default 07:00)
+  py -3 automation/setup_daemon.py --remove        Stop and remove the daemon
+
+The daemon sleeps until the scheduled time, runs the full pipeline, then
+sleeps until tomorrow. If your machine is off at the scheduled time, it
+retries every 3 hours (up to 3 attempts) once you are back online.
+
+Manual alternative (runs in a visible terminal):
+
+  py -3 economic_tracker.py --daemon 07:00
 
 Manual setup (Windows Task Scheduler):
   1. Open Task Scheduler (search "Task Scheduler" in Start menu)
@@ -123,6 +145,13 @@ When a significant change is detected, it fires an alert:
 
 Alerts appear in the console output. If the 'plyer' package is installed,
 a Windows toast notification will also pop up.
+
+Testing notifications:
+
+  1. Install plyer:  pip install plyer
+  2. Run:  py -3 automation/test_alert.py
+     Or double-click automation/test_alert.bat
+  3. A toast notification should appear in the bottom-right of your screen
 
 
 ================================================================================
@@ -214,6 +243,51 @@ and replace FRED_API_KEY in the script.
 
 Values show "ADD PDF"
   No matching PDF was found in the Reports/ folder. Add the PDF and re-run.
+
+
+================================================================================
+  WEB DASHBOARD
+================================================================================
+
+The tracker also includes a live web dashboard that displays the same
+analysis in a browser — no Excel needed.
+
+LOCAL (for testing):
+
+  1. Install Flask:
+       pip install flask flask-limiter
+
+  2. Run the dashboard:
+       py -3 web_dashboard.py
+
+  3. Open http://localhost:5000 in your browser
+     (first load takes ~30 seconds while FRED data is fetched)
+
+DEPLOY ON RAILWAY (public URL):
+
+  1. Push this folder to a GitHub repository
+
+  2. Go to https://railway.app and sign in with GitHub
+
+  3. Click "New Project" > "Deploy from GitHub repo" > select your repo
+
+  4. Go to Variables tab and add:
+       FRED_API_KEY = e0ba612289f5c62c1276b774652a483b
+     (or use your own key from fred.stlouisfed.org)
+
+  5. Railway auto-detects Python, installs dependencies, and deploys.
+     You'll get a public URL like:
+       https://us-economic-tracker-production.up.railway.app
+
+  The dashboard caches FRED data for 1 hour. No manual refresh needed.
+  Auto-redeploys whenever you push code changes to GitHub.
+  Railway free tier: $5/month credit (more than enough for this app).
+
+FILES:
+  web_dashboard.py           Flask server (imports from economic_tracker.py)
+  templates/dashboard.html   Dashboard page (dark theme, Chart.js charts)
+  requirements.txt           Python dependencies (for Railway/pip)
+  Procfile                   Railway start command (gunicorn)
 
 
 ================================================================================
