@@ -1,8 +1,9 @@
-================================================================================
-  US ECONOMIC INDICATORS TRACKER  v8
+
+  US ECONOMIC INDICATORS TRACKER
+  
   Automated macro dashboard with regime detection, leading indicators,
   probabilistic HMM classification, and forward-looking signals
-================================================================================
+
 
 OVERVIEW
 --------
