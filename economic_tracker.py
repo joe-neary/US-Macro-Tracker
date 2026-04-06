@@ -59,9 +59,32 @@ ISM_FOLDER    = PDF_FOLDER                                  # legacy alias used 
 MANUAL_FILE   = os.path.join(DATA_DIR, "ISM_Manual_Input.xlsx")
 OUTPUT_FILE   = os.path.join(OUTPUT_DIR, "US_Economic_Tracker.xlsx")
 TEMPLATE_FILE = os.path.join(OUTPUT_DIR, "US_Economic_Tracker_TEMPLATE.xlsx")
-CSV_ISM_MFG   = os.path.join(CSV_FOLDER, "ism_manufacturing_pmi_2016-01_to_2026-02.csv")
-CSV_ISM_SVC   = os.path.join(CSV_FOLDER, "ism_non_manufacturing_pmi_2016-01_to_2026-02.csv")
-CSV_CHICAGO   = os.path.join(CSV_FOLDER, "chicago_pmi_mni_business_barometer_2016-01_to_2026-02.csv")
+def _find_csv(folder, pattern, exclude=None):
+    """Find a CSV file in folder whose name contains the given pattern (case-insensitive).
+    Optionally exclude files whose name contains the exclude string."""
+    if not os.path.isdir(folder):
+        return None
+    for f in sorted(os.listdir(folder)):
+        fl = f.lower()
+        if fl.endswith(".csv") and pattern in fl:
+            if exclude and exclude in fl:
+                continue
+            return os.path.join(folder, f)
+    return None
+
+# Default filenames used when creating new CSVs from scratch
+_CSV_DEFAULTS = {
+    "ism_mfg":      "ism_manufacturing_pmi.csv",
+    "ism_svc":      "ism_non_manufacturing_pmi.csv",
+    "chicago_pmi":  "chicago_pmi_mni_business_barometer.csv",
+}
+# Dynamic discovery: find CSVs by keyword pattern, fall back to default name
+CSV_ISM_MFG   = _find_csv(CSV_FOLDER, "manufactur", exclude="non") or os.path.join(CSV_FOLDER, _CSV_DEFAULTS["ism_mfg"])
+CSV_ISM_SVC   = (_find_csv(CSV_FOLDER, "non_manufactur") or _find_csv(CSV_FOLDER, "non-manufactur")
+                 or _find_csv(CSV_FOLDER, "nonmanufactur") or _find_csv(CSV_FOLDER, "services")
+                 or os.path.join(CSV_FOLDER, _CSV_DEFAULTS["ism_svc"]))
+CSV_CHICAGO   = (_find_csv(CSV_FOLDER, "chicago") or _find_csv(CSV_FOLDER, "barometer")
+                 or _find_csv(CSV_FOLDER, "mni") or os.path.join(CSV_FOLDER, _CSV_DEFAULTS["chicago_pmi"]))
 CSV_PMI_MAP   = {"ism_mfg": CSV_ISM_MFG, "ism_svc": CSV_ISM_SVC, "chicago_pmi": CSV_CHICAGO}
 CACHE_FILE    = os.path.join(BASE_DIR, ".fred_cache.json")
 CACHE_MAX_AGE = 72000  # seconds (20 hours) - cache is valid for one trading day
@@ -479,8 +502,27 @@ def _write_pmi_csv(filepath, date_val_dict):
             yr, mo = int(d[:4]), int(d[5:7])
             f.write(f"{yr},{mo},{date_val_dict[d]}\n")
 
+def update_pmi_csvs(mfg_date, mfg_val, svc_date, svc_val, chi_date=None, chi_val=None):
+    """Write new PDF-parsed PMI values into the CSV history files.
+    Creates the CSV folder and files if they don't exist."""
+    os.makedirs(CSV_FOLDER, exist_ok=True)
+    updates = [
+        (CSV_ISM_MFG,  mfg_date, mfg_val, "ISM Mfg"),
+        (CSV_ISM_SVC,  svc_date, svc_val,  "ISM Svc"),
+        (CSV_CHICAGO,  chi_date, chi_val,   "Chicago PMI"),
+    ]
+    for csv_path, date, val, label in updates:
+        if date is None or val is None:
+            continue
+        existing = {r[0]: r[1] for r in _read_pmi_csv(csv_path)}
+        if date in existing and existing[date] == val:
+            continue  # already up to date
+        existing[date] = val
+        _write_pmi_csv(csv_path, existing)
+        print(f"  [CSV] {label}: updated {date[:7]} = {val}")
+
 def import_pmi_csvs():
-    """Scan Reports/Import/ for user-provided PMI CSV files, merge with main CSVs."""
+    """Scan data/import/ for user-provided PMI CSV files, merge with main CSVs."""
     if not os.path.isdir(IMPORT_FOLDER):
         return
     imported_any = False
@@ -580,9 +622,9 @@ def parse_reports_folder():
         if not fname.lower().endswith(".pdf"): continue
         fpath = os.path.join(ISM_FOLDER, fname)
         fl    = fname.lower()
-        is_mni = "mni" in fl or "barometer" in fl
+        is_mni = "mni" in fl or "barometer" in fl or "chi" in fl
         is_mfg = (not is_mni) and ("manuf" in fl)
-        is_svc = (not is_mni) and ("serv" in fl or "non-manuf" in fl
+        is_svc = (not is_mni) and ("ser" in fl or "non-manuf" in fl
                                    or "nonmanuf" in fl or "non_manuf" in fl)
         if is_mni:
             d, v = parse_mni_pdf(fpath)
@@ -2326,6 +2368,10 @@ CD["fedfunds"] = max(CD.values()) + 3
 for _pk in POS_KEYS:
     CD[_pk] = max(CD.values()) + 3
 
+def _date_lbl(d):
+    """YYYY-MM[-DD] → MM-YY for chart x-axis (e.g. '2026-03-01' → '03-26')."""
+    return f"{d[5:7]}-{d[2:4]}"
+
 def build_chart_data(wb, data, ff_hist, pos_data=None):
     if "_Chart Data" in wb.sheetnames:
         del wb["_Chart Data"]
@@ -2337,15 +2383,13 @@ def build_chart_data(wb, data, ff_hist, pos_data=None):
         ws.cell(1, col,     f"{name} - Date")
         ws.cell(1, col + 1, f"{name} ({y_lbl})")
         for i, (date, v) in enumerate(reversed(hist[:12]), 2):
-            # IC4WSA is weekly - use full date so x-axis doesn't collapse weeks into months
-            date_lbl = date[:10] if key == "initial_claims" else date[:7]
-            ws.cell(i, col,     date_lbl)
+            ws.cell(i, col,     _date_lbl(date))
             ws.cell(i, col + 1, v)
     col = CD["fedfunds"]
     ws.cell(1, col,     "Fed Funds Rate - Date")
     ws.cell(1, col + 1, "Fed Funds Rate (%)")
     for i, (date, v) in enumerate(reversed(ff_hist[:48]), 2):
-        ws.cell(i, col,     date[:7])
+        ws.cell(i, col,     _date_lbl(date))
         ws.cell(i, col + 1, v)
     # Positioning indicators - used by the Market Positioning sheet charts
     if pos_data:
@@ -2358,7 +2402,7 @@ def build_chart_data(wb, data, ff_hist, pos_data=None):
             # Yield curve is daily - use up to 260 obs (≈1 year); others weekly/quarterly use 52
             n_pos = 260 if pk == "yield_curve" else 52
             for i, (date, v) in enumerate(reversed(hist_p[:n_pos]), 2):
-                ws.cell(i, col,     date[:10])
+                ws.cell(i, col,     _date_lbl(date))
                 ws.cell(i, col + 1, v)
 
     # PMI chart override: use 24 months from CSV instead of 12-month manual-input history
@@ -2369,7 +2413,7 @@ def build_chart_data(wb, data, ff_hist, pos_data=None):
         ws.cell(1, col,     f"{name} - Date")
         ws.cell(1, col + 1, f"{name} ({y_lbl})")
         for i, (date, v) in enumerate(reversed(csv_hist[:24]), 2):
-            ws.cell(i, col,     date[:7])
+            ws.cell(i, col,     _date_lbl(date))
             ws.cell(i, col + 1, v)
 
     return ws
@@ -2891,6 +2935,10 @@ def build_category_sheet(wb, sheet_name, category, data, cat_col, ch_ws):
         cr += 1
     rh(ws, cr, 8); cr += 1
 
+    # Always regenerate charts so references point to the current _Chart Data sheet
+    if hasattr(ws, '_charts'):
+        ws._charts = []
+
     # Charts with back-links
     for key, name, val_fmt, thresh, ch_c, y_lbl in cat_metrics:
         _, hist = data.get(key, (None, []))
@@ -2905,14 +2953,13 @@ def build_category_sheet(wb, sheet_name, category, data, cat_col, ch_ws):
         back.font = _font(color=C["link"], size=8)
         back.hyperlink = f"#'{sheet_name}'!A{index_start}"
         cr += 1
-        if not _TEMPLATE_MODE:
-            ws.add_chart(
-                _make_chart(
-                    name, y_lbl, ch_ws, CD[key], n if n >= 2 else 2,
-                    ch_c, width=22.0, height=11.0, bar=use_bar,
-                    y_fmt=CHART_Y_FMT.get(key, "#,##0.0")
-                ),
-                f"B{cr}")
+        ws.add_chart(
+            _make_chart(
+                name, y_lbl, ch_ws, CD[key], n if n >= 2 else 2,
+                ch_c, width=22.0, height=11.0, bar=use_bar,
+                y_fmt=CHART_Y_FMT.get(key, "#,##0.0")
+            ),
+            f"B{cr}")
         cr += chart_spacing - 1
 
     print(f"  Built: {sheet_name}")
@@ -3412,6 +3459,9 @@ def main():
 
     print("\nStep 2: Updating data log...")
     update_manual_input(mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val)
+
+    print("\nStep 2b: Updating CSV history...")
+    update_pmi_csvs(mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val)
 
     # Fetch order: largest FRED pulls first to prime the cache, so subsequent
     # calls for the same series (with smaller limits) are instant cache hits.

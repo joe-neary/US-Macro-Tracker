@@ -937,7 +937,9 @@ function toggleChart(btn) {
   if (!ind) return;
 
   const canvas = document.getElementById('single-chart-' + idx);
-  const labels = Array.from({length: ind.history.length}, (_, i) => 'M' + (i + 1));
+  const labels = (ind.dates && ind.dates.length === ind.history.length)
+    ? ind.dates
+    : Array.from({length: ind.history.length}, (_, i) => 'M' + (i + 1));
   const pal = signalPalette[ind.signal] || defaultPalette;
 
   chartInstances[id] = new Chart(canvas, {

@@ -165,6 +165,13 @@ def _gather_data():
     sahm = et.compute_sahm_rule(unrate_hist) if unrate_hist else None
 
     # Step 5: Build indicator table
+    # Pre-load PMI CSV history so ISM/Chicago charts always have data
+    _pmi_csv_hist = {}
+    for pmi_key, csv_path in et.CSV_PMI_MAP.items():
+        csv_rows = et._read_pmi_csv(csv_path)  # [(YYYY-MM-01, float), ...] newest-first
+        if csv_rows:
+            _pmi_csv_hist[pmi_key] = csv_rows
+
     indicators = []
     for key, name, category, fmt, thresholds, color, y_label in et.METRICS:
         val, hist = data.get(key, (None, []))
@@ -173,10 +180,19 @@ def _gather_data():
         itype = et.INDICATOR_TYPE.get(key, "Lagging")
         unit = et.UNIT_MAP.get(key, "")
 
+        # For PMI keys, prefer CSV history (24 months) over manual input
+        if key in _pmi_csv_hist:
+            csv_h = _pmi_csv_hist[key]
+            use_hist = csv_h  # newest-first, up to 24 months
+            n_hist = 24
+        else:
+            use_hist = hist  # newest-first from FRED
+            n_hist = 12
+
         # Trend: compare current vs 3 months ago
         trend = "flat"
-        if val is not None and len(hist) >= 4:
-            ago = hist[3][1] if len(hist) > 3 else hist[-1][1]
+        if val is not None and len(use_hist) >= 4:
+            ago = use_hist[3][1] if len(use_hist) > 3 else use_hist[-1][1]
             if ago != 0:
                 diff = val - ago
                 inverted = key in ("hy_spread", "ig_spread", "epu", "unemployment_rate", "initial_claims")
@@ -187,8 +203,11 @@ def _gather_data():
                 elif diff < -abs(ago) * 0.03:
                     trend = "down"
 
-        # History for sparkline (last 12 months, oldest first)
-        spark_data = [h[1] for h in reversed(hist[:12])] if hist else []
+        # History for sparkline and charts (oldest first)
+        trimmed = list(reversed(use_hist[:n_hist])) if use_hist else []
+        spark_data = [h[1] for h in trimmed]
+        # Date labels as MM-YY (e.g. '03-26')
+        date_labels = [f"{d[0][5:7]}-{d[0][2:4]}" for d in trimmed]
 
         indicators.append({
             "key": key,
@@ -202,6 +221,7 @@ def _gather_data():
             "type": itype,
             "trend": trend,
             "history": spark_data,
+            "dates": date_labels,
         })
 
     # Step 6: Positioning
