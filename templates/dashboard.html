@@ -30,6 +30,11 @@
   --stagflation:    #a04000;
   --deflation:      #7b241c;
 }
+[data-theme="light"] {
+  --bg: #f4f5f7; --bg-card: #ffffff; --bg-card2: #f0f0f5;
+  --border: #dde0e6; --text: #1a1a2e; --text-dim: #5a5a6e;
+  --purple: #7c22c4; --purple-dim: #5a0fa0;
+}
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
@@ -47,8 +52,21 @@ a:hover { text-decoration: underline; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
 .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; }
-@media (max-width: 900px) {
+@media (max-width: 600px) {
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .container { padding: 1rem; }
+  .card { padding: 1rem; }
+  .data-table { font-size: 0.65rem; }
+  /* Hide lower-priority columns on small screens */
+  .data-table th:nth-child(5), .data-table td:nth-child(5),
+  .data-table th:nth-child(6), .data-table td:nth-child(6),
+  .data-table th:nth-child(7), .data-table td:nth-child(7) { display: none; }
+  .section-title { font-size: 1rem; }
+  .header h1 { font-size: 1.4rem; }
+}
+@media (min-width: 601px) and (max-width: 900px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr 1fr; }
+  .data-table th:nth-child(5), .data-table td:nth-child(5) { display: none; }
 }
 @media (min-width: 901px) and (max-width: 1200px) {
   .grid-3 { grid-template-columns: 1fr 1fr; }
@@ -393,17 +411,16 @@ th[data-sortable][data-sort-dir="desc"]::after {
 .has-tooltip {
   cursor: help;
   border-bottom: 1px dotted var(--text-dim);
-  position: relative;
 }
 .tooltip-popup {
   display: none;
-  position: absolute; left: 0; top: 100%; z-index: 100;
+  position: fixed; z-index: 100;
   background: var(--bg-card2); border: 1px solid var(--border); border-radius: 10px;
   padding: 1.1rem; width: 340px; max-height: 300px; overflow-y: auto;
   font-size: 0.75rem; color: var(--text-dim); line-height: 1.6;
   white-space: pre-wrap; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+  pointer-events: none;
 }
-.has-tooltip:hover .tooltip-popup { display: block; }
 
 /* Chart toggle buttons */
 .chart-toggle-group { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.25rem; }
@@ -423,6 +440,8 @@ th[data-sortable][data-sort-dir="desc"]::after {
 }
 .chart-label { font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif; font-weight: 700; font-size: 0.9rem; color: var(--text); letter-spacing: -0.01em; }
 .chart-sublabel { font-weight: 400; color: var(--text-dim); font-size: 0.73rem; margin-left: 0.4rem; }
+.source-link { color: var(--purple); text-decoration: none; font-weight: 500; }
+.source-link:hover { text-decoration: underline; }
 .chart-toolbar { display: flex; gap: 0.4rem; }
 .chart-btn {
   font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
@@ -453,16 +472,35 @@ th[data-sortable][data-sort-dir="desc"]::after {
     <div>
       <h1>US Economic Indicators Tracker</h1>
       <div style="font-size:0.8rem; color:var(--text-dim); margin-top:0.25rem">
-        20 Indicators · 4 Categories · HMM Regime Detection
+        29 Indicators · 4 Categories · HMM Regime Detection
       </div>
     </div>
     {% if data %}
     <div class="header-meta">
-      <div>Last refreshed: {{ data.updated_at }}</div>
+      <div style="font-size:0.8rem">Last refreshed: {{ data.updated_at }}
+        · <a href="/methodology" style="color:var(--purple); text-decoration:none">Methodology</a>
+        · <a href="/api/v1/summary" style="color:var(--text-dim); text-decoration:none">API</a>
+        · <button onclick="toggleTheme()" style="background:none; border:1px solid var(--border); border-radius:6px; padding:0.15rem 0.5rem; color:var(--text-dim); cursor:pointer; font-size:0.8rem" id="theme-btn">Light</button>
+      </div>
       <div style="margin-top:0.4rem">
+        {% if data.is_transition %}
+        <span class="regime-badge" style="background:var(--amber)">
+          Transition: {{ data.transition_from }} &#8594; {{ data.transition_to }}
+        </span>
+        <span style="font-size:0.65rem; margin-left:0.5rem; color:var(--amber)">
+          &#9679; Models Diverge
+        </span>
+        <div style="font-size:0.65rem; color:var(--text-dim); margin-top:0.3rem">
+          Walk-forward (real-time): {{ data.wf_regime }} | Full-sample (hindsight): {{ data.regime }}
+        </div>
+        {% else %}
         <span class="regime-badge" style="background:#{{ data.regime_color }}">
           {{ data.regime }}
         </span>
+        <span style="font-size:0.7rem; margin-left:0.5rem; color:{% if data.stability > 80 %}var(--green){% elif data.stability > 50 %}var(--amber){% else %}var(--red){% endif %}">
+          &#9679; {% if data.stability > 80 %}Stable{% elif data.stability > 50 %}Transition{% else %}Uncertain{% endif %}
+        </span>
+        {% endif %}
       </div>
     </div>
     {% endif %}
@@ -471,6 +509,17 @@ th[data-sortable][data-sort-dir="desc"]::after {
   {% if error %}
   <div class="error-banner">
     Data refresh error: {{ error }}{% if data %} - showing cached data.{% endif %}
+  </div>
+  {% endif %}
+
+  {% if data and data.alerts %}
+  <div style="margin-bottom:1.25rem">
+    {% for a in data.alerts[:3] %}
+    <div style="background:rgba(176,58,46,0.15); border:1px solid rgba(176,58,46,0.3); border-radius:10px; padding:0.6rem 1rem; margin-bottom:0.4rem; font-size:0.8rem; display:flex; justify-content:space-between; align-items:center">
+      <span style="color:var(--red); font-weight:600">{{ a.message }}</span>
+      <span style="color:var(--text-dim); font-size:0.7rem">{{ a.timestamp[:16] }}</span>
+    </div>
+    {% endfor %}
   </div>
   {% endif %}
 
@@ -498,7 +547,16 @@ th[data-sortable][data-sort-dir="desc"]::after {
     'jolts_quits':        'Share of workers voluntarily leaving their jobs',
     'breakeven_10y':      'Market-implied inflation expectation over the next 10 years',
     'cfnai':              'Weighted average of 85 indicators measuring national economic activity',
-    'epu':                'Index of economic policy uncertainty from news, tax, and forecaster data'
+    'epu':                'Index of economic policy uncertainty from news, tax, and forecaster data',
+    'adp':                'Private-sector payroll estimate released 1-2 days before BLS',
+    'ahe_yoy':            'Average hourly earnings growth - the key wage-price spiral indicator',
+    'spg_svc':            'Monthly survey of ~400 US service sector companies by S&P Global',
+    'core_pce_yoy':       "The Fed's preferred inflation measure - core spending deflator ex food and energy",
+    'import_yoy':         'Year-on-year change in import prices - direct tariff pass-through measure',
+    'indpro_mom':         'Monthly change in manufacturing, mining and utilities output (NBER recession indicator)',
+    'retail_mom':         'Monthly change in consumer spending at retail establishments',
+    'dxy':                'Trade-weighted US dollar index - financial conditions and export competitiveness',
+    'housing_starts':     'Year-on-year change in new residential construction starts'
   } %}
 
   <!-- ── Overview Cards ── -->
@@ -555,6 +613,64 @@ th[data-sortable][data-sort-dir="desc"]::after {
       {% endif %}
     </div>
   </div>
+
+  <!-- ── Regime Timeline ── -->
+  {% if data.regime_history %}
+  <div class="section-title">Regime History</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">Full-Sample (Smoothed) - {{ data.regime_history.dates|length }} months</div>
+      <div class="chart-wrapper" style="height:300px; position:relative">
+        <canvas id="regime-timeline"></canvas>
+      </div>
+      <div style="text-align:center; margin-top:0.5rem; font-size:0.6rem; color:var(--text-dim)">
+        Forward-backward probabilities. Uses all data including future. Best estimate of true regime.
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Walk-Forward (Out-of-Sample) - {% if data.wf_regime_history %}{{ data.wf_regime_history.dates|length }}{% elif data.regime_history_filtered %}{{ data.regime_history_filtered.dates|length }}{% else %}0{% endif %} months</div>
+      <div class="chart-wrapper" style="height:300px; position:relative">
+        <canvas id="regime-timeline-wf"></canvas>
+      </div>
+      <div style="text-align:center; margin-top:0.5rem; font-size:0.6rem; color:var(--text-dim)">
+        {% if data.wf_regime_history %}Each month classified using only data available at that time. No look-ahead.{% else %}Forward-only filtered probabilities (no walk-forward cache available).{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ── Regime Backtest ── -->
+  {% if data.backtest %}
+  <div class="section-title">Regime Backtest - S&P 500 Monthly Returns by Regime
+    {% if data.backtest.is_walk_forward %}<span style="font-size:0.65rem; background:var(--green); color:#fff; padding:0.15rem 0.5rem; border-radius:4px; margin-left:0.5rem; vertical-align:middle">Out-of-sample</span>{% else %}<span style="font-size:0.65rem; background:var(--amber); color:#fff; padding:0.15rem 0.5rem; border-radius:4px; margin-left:0.5rem; vertical-align:middle">In-sample</span>{% endif %}
+  </div>
+  <div class="card">
+    <div class="chart-wrapper" style="height:280px; position:relative">
+      <canvas id="backtest-chart"></canvas>
+    </div>
+    <div class="grid-4" style="margin-top:1rem; gap:0.75rem">
+      {% for regime in ['Early Recovery', 'Reflation', 'Stagflation', 'Deflation'] %}
+      {% set s = data.backtest.stats.get(regime, {}) %}
+      <div style="text-align:center; font-size:0.75rem">
+        <div style="font-weight:600; color:{% if regime == 'Early Recovery' %}#27ae60{% elif regime == 'Reflation' %}#f39c12{% elif regime == 'Stagflation' %}#b03a2e{% else %}#2980b9{% endif %}">{{ regime }}</div>
+        <div>{{ s.get('n', 0) }} months</div>
+        <div>Avg: {{ s.get('avg', 0) }}%/mo</div>
+        <div>Sharpe: {{ s.get('sharpe', 0) }}</div>
+        <div>Hit rate: {{ s.get('hit', 0) }}%</div>
+      </div>
+      {% endfor %}
+    </div>
+    <div style="text-align:center; margin-top:0.75rem; font-size:0.65rem; color:var(--text-dim)">
+      Walk-forward filtered probabilities (forward-only, no future data used for classification). HMM parameters are in-sample but each month's regime call uses only data available at that time. Past performance does not predict future results.
+    </div>
+    {% if data.backtest.cumulative %}
+    <div style="margin-top:1.25rem; font-weight:600; font-size:0.85rem; color:var(--text)">Cumulative S&P 500 Return (indexed to 100)</div>
+    <div class="chart-wrapper" style="height:250px; position:relative; margin-top:0.5rem">
+      <canvas id="cumulative-chart"></canvas>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
 
   <!-- ── Methodology Ranking ── -->
   {% if data.methodology %}
@@ -642,6 +758,65 @@ th[data-sortable][data-sort-dir="desc"]::after {
     </div>
   </div>
 
+  <!-- ── Recommended Sector Allocation ── -->
+  {% if data.portfolio %}
+  <div class="section-title">Recommended Sector Allocation (Probability-Weighted)</div>
+  <div class="card">
+    <div style="display:flex; align-items:center; margin-bottom:0.6rem; font-size:0.65rem; color:var(--text-dim); font-weight:600">
+      <span style="width:140px">Sector</span>
+      <span style="flex:1; text-align:center">Allocation</span>
+      <span style="width:50px; text-align:right">Weight</span>
+      <span style="width:65px; text-align:right">Exp. Ret.</span>
+    </div>
+    {% for p in data.portfolio %}
+    <div style="display:flex; align-items:center; margin-bottom:0.35rem; font-size:0.8rem">
+      <span style="width:140px; color:var(--text)">{{ p.sector }}</span>
+      <div style="flex:1; height:20px; background:var(--bg-card2); border-radius:6px; overflow:hidden; margin:0 0.75rem">
+        <div style="width:{{ p.weight }}%; height:100%; background:{% if p.expected > 5 %}var(--green){% elif p.expected > 0 %}var(--purple){% else %}var(--red){% endif %}; border-radius:6px; min-width:2px"></div>
+      </div>
+      <span style="width:50px; text-align:right; font-weight:600" title="Allocation weight">{{ p.weight }}%</span>
+      <span style="width:65px; text-align:right; font-size:0.75rem; color:{% if p.expected > 0 %}var(--green){% else %}var(--red){% endif %}" title="Expected annual return (probability-weighted)">{{ '%+.1f'|format(p.expected) }}%</span>
+    </div>
+    {% endfor %}
+    <div style="font-size:0.6rem; color:var(--text-dim); margin-top:0.75rem">
+      Weight = recommended allocation. Exp. Ret. = probability-weighted annual sector return from Invictus Research backtests. Not investment advice.
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ── Regime Transition Probabilities ── -->
+  {% if data.transition_matrix %}
+  <div class="section-title">Monthly Regime Transition Probabilities</div>
+  <div class="card" style="overflow-x:auto">
+    <table class="data-table" style="font-size:0.8rem; text-align:center">
+      <thead>
+        <tr>
+          <th style="text-align:left">From ↓ / To →</th>
+          {% for r in data.transition_matrix.regimes %}
+          <th>{{ r }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for i in range(4) %}
+        <tr>
+          <td style="text-align:left; font-weight:600">{{ data.transition_matrix.regimes[i] }}</td>
+          {% for j in range(4) %}
+          {% set v = data.transition_matrix.rows[i][j] %}
+          <td style="color:{% if i == j %}var(--green){% elif v > 5 %}var(--amber){% else %}var(--text-dim){% endif %}; font-weight:{% if i == j or v > 5 %}600{% else %}400{% endif %}">
+            {{ v }}%
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div style="font-size:0.65rem; color:var(--text-dim); margin-top:0.5rem">
+      Diagonal = regime persistence (probability of staying). Off-diagonal = probability of transitioning in any given month.
+    </div>
+  </div>
+  {% endif %}
+
   <!-- ── Sector Playbook ── -->
   <div class="section-title">Sector Playbook - {{ data.regime }}</div>
   <div class="grid-2">
@@ -700,7 +875,9 @@ th[data-sortable][data-sort-dir="desc"]::after {
           </td>
           <td style="font-size:0.75rem">
             {% if c.source == 'PDF' %}
-              <span style="color:var(--amber); font-weight:600">⚠ Add PDF to Reports/</span>
+              <span style="color:var(--amber); font-weight:600">⚠ Add PDF to data/pdfs/</span>
+            {% elif c.source == 'CSV' %}
+              <span style="color:var(--text-dim)">✏ Update CSV manually</span>
             {% else %}
               Auto-updated via FRED
             {% endif %}
@@ -713,7 +890,7 @@ th[data-sortable][data-sort-dir="desc"]::after {
   {% endif %}
 
   <!-- ── Indicators Table ── -->
-  <div class="section-title">All Indicators (20)</div>
+  <div class="section-title">All Indicators (29)</div>
   <div class="card" style="overflow-x:auto">
     <table class="data-table" id="indicators-table">
       <thead>
@@ -726,6 +903,11 @@ th[data-sortable][data-sort-dir="desc"]::after {
           <th data-sortable data-col="5" style="text-align:center">Wt</th>
           <th data-sortable data-col="6">Type</th>
           <th data-sortable data-col="7" style="text-align:center">Trend</th>
+          <th data-sortable data-col="8" style="text-align:center"><span class="has-tooltip">Latest<span class="tooltip-popup">Date of the most recent data point for each indicator.
+
+Green = up to date, data is recent.
+Amber = old but this is the latest available (slow-publishing indicator, nothing wrong).
+Red = stale, data should be more recent. May indicate a fetch error.</span></span></th>
           <th style="text-align:center">12M</th>
         </tr>
       </thead>
@@ -735,7 +917,7 @@ th[data-sortable][data-sort-dir="desc"]::after {
           {% if ind.category != ns.last_cat %}
             {% set ns.last_cat = ind.category %}
             <tr data-cat-header>
-              <td colspan="9" class="cat-header"
+              <td colspan="10" class="cat-header"
                   style="color:#{% if ind.category == 'Job Market' %}8a2bd0{% elif ind.category == 'Inflation' %}a957e8{% elif ind.category == 'Economic Activities' %}c98cff{% else %}0e6655{% endif %}">
                 {{ ind.category }}
               </td>
@@ -754,7 +936,7 @@ th[data-sortable][data-sort-dir="desc"]::after {
             <td style="font-size:0.75rem; color:var(--text-dim)">{{ ind.unit }}</td>
             <td class="val" style="text-align:right; color:{% if ind.signal == 'expansionary' %}var(--green){% elif ind.signal == 'contractionary' %}var(--red){% else %}var(--amber){% endif %}">
               {% if ind.value is not none %}
-                {{ '%.2f'|format(ind.value) }}
+                {{ '%.2f'|format(ind.value) }}{% if ind.anomaly %} <span style="color:var(--red)" title="Anomaly: value is >4 sigma from recent history">&#9888;</span>{% endif %}
               {% else %}
                 <span style="color:var(--amber); font-size:0.75rem">Pending</span>
               {% endif %}
@@ -775,6 +957,10 @@ th[data-sortable][data-sort-dir="desc"]::after {
               {% elif ind.trend == 'down' %}<span class="trend-down">&#9660;</span>
               {% else %}<span class="trend-flat">&rarr;</span>{% endif %}
             </td>
+            <td data-sort-value="{{ ind.last_date_sort }}" style="text-align:center; font-size:0.8rem; font-weight:600; font-variant-numeric:tabular-nums;
+                       color:{% if ind.last_date %}{% if ind.data_status == 'fresh' %}var(--green){% elif ind.data_status == 'old' %}var(--amber){% else %}var(--red){% endif %}{% else %}var(--text-dim){% endif %}">
+              {{ ind.last_date or '–' }}
+            </td>
             <td style="text-align:center">
               {% if ind.history %}
               <canvas class="sparkline" width="80" height="24"
@@ -786,6 +972,36 @@ th[data-sortable][data-sort-dir="desc"]::after {
       </tbody>
     </table>
   </div>
+
+  <!-- ── Correlation Heatmap ── -->
+  {% if data.correlation %}
+  <div class="section-title">Indicator Correlation Matrix (12-Month)</div>
+  <div class="card" style="overflow-x:auto; display:flex; flex-direction:column; align-items:center">
+    <table style="border-collapse:collapse; font-size:0.55rem; text-align:center; width:auto; margin:0 auto">
+      <tr>
+        <td></td>
+        {% for l in data.correlation.labels %}
+        <td style="writing-mode:vertical-rl; transform:rotate(180deg); padding:2px 1px; color:var(--text-dim); height:70px; font-size:0.5rem">{{ l }}</td>
+        {% endfor %}
+      </tr>
+      {% for i in range(data.correlation.labels|length) %}
+      <tr>
+        <td style="text-align:right; padding:2px 6px; color:var(--text-dim); white-space:nowrap; font-size:0.5rem">{{ data.correlation.labels[i] }}</td>
+        {% for j in range(data.correlation.labels|length) %}
+        {% set v = data.correlation.matrix[i][j] %}
+        <td style="width:18px; height:18px; padding:0;
+          background:{% if i == j %}var(--bg-card2){% elif v > 0 %}rgba(176,58,46,{{ (v * 0.7)|round(2) }}){% else %}rgba(41,128,185,{{ (-v * 0.7)|round(2) }}){% endif %}"
+          title="{{ data.correlation.labels[i] }} vs {{ data.correlation.labels[j] }}: {{ v }}">
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </table>
+    <div style="font-size:0.6rem; color:var(--text-dim); margin-top:0.75rem; text-align:center">
+      Red = positive correlation. Blue = negative. Hover cells for exact values.
+    </div>
+  </div>
+  {% endif %}
 
   <!-- ── Market Positioning ── -->
   <div class="section-title">Market Positioning</div>
@@ -840,7 +1056,7 @@ th[data-sortable][data-sort-dir="desc"]::after {
           <div>
             <span class="chart-label">{{ ind.name }}</span>
             <span class="dot dot-{{ ind.signal }}" style="margin-left:0.5rem"></span>
-            <span class="chart-sublabel">{{ ind.category }} · {{ ind.type }} · {{ desc_map.get(ind.key, '') }}</span>
+            <span class="chart-sublabel">{{ ind.category }} · {{ ind.type }} · {{ desc_map.get(ind.key, '') }}{% if ind.source_url %} · <a href="{{ ind.source_url }}" target="_blank" rel="noopener" class="source-link">Source ↗</a>{% endif %}</span>
           </div>
           <div class="chart-toolbar">
             <button class="chart-btn" onclick="resetZoom('ind-chart-{{ loop.index0 }}')">Reset Zoom</button>
@@ -863,6 +1079,9 @@ th[data-sortable][data-sort-dir="desc"]::after {
     Data: <a href="https://fred.stlouisfed.org" target="_blank" rel="noopener">FRED</a> · ISM · MNI Indicators ·
     Regime framework: Invictus Research ·
     Auto-refreshes daily
+    <div style="margin-top:0.6rem; font-size:0.75rem">
+      Created by <a href="https://www.linkedin.com/in/joseph-gregory-neary" target="_blank" rel="noopener" style="color:var(--purple); text-decoration:none; font-weight:600">Joe Neary</a>
+    </div>
   </div>
 
   {% endif %}
@@ -890,6 +1109,240 @@ document.querySelectorAll('.sparkline').forEach(canvas => {
   });
   ctx.stroke();
 });
+
+// ── NBER Recession Shading Plugin ──
+const recessions = {{ data.recessions | tojson if data.recessions else '[]' }};
+const recessionPlugin = {
+  id: 'recessionShading',
+  beforeDraw: function(chart) {
+    if (!recessions.length) return;
+    const ctx = chart.ctx;
+    const xAxis = chart.scales.x;
+    const yAxis = chart.scales.y;
+    const labels = chart.data.labels;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    recessions.forEach(function(rec) {
+      const si = labels.indexOf(rec.start);
+      const ei = labels.indexOf(rec.end);
+      if (si < 0 && ei < 0) return;
+      const startIdx = Math.max(si, 0);
+      const endIdx = ei >= 0 ? ei : labels.length - 1;
+      const x1 = xAxis.getPixelForValue(startIdx);
+      const x2 = xAxis.getPixelForValue(endIdx);
+      ctx.fillRect(x1, yAxis.top, x2 - x1, yAxis.bottom - yAxis.top);
+    });
+    ctx.restore();
+  }
+};
+
+// ── Regime Timeline (stacked area) ──
+{% if data.regime_history %}
+(function() {
+  const rh = {{ data.regime_history | tojson }};
+  const ctx = document.getElementById('regime-timeline');
+  if (!ctx) return;
+  const regimeColors = {
+    'Early Recovery': { bg: 'rgba(39,174,96,0.7)',  border: '#27ae60' },
+    'Reflation':      { bg: 'rgba(243,156,18,0.7)', border: '#f39c12' },
+    'Stagflation':    { bg: 'rgba(176,58,46,0.7)',  border: '#b03a2e' },
+    'Deflation':      { bg: 'rgba(41,128,185,0.7)', border: '#2980b9' },
+  };
+  const regimeOrder = ['Early Recovery', 'Reflation', 'Stagflation', 'Deflation'];
+  const datasets = regimeOrder.map(function(name) {
+    return {
+      label: name,
+      data: rh[name],
+      backgroundColor: regimeColors[name].bg,
+      borderColor: regimeColors[name].border,
+      borderWidth: 0.5,
+      fill: true,
+      pointRadius: 0,
+      tension: 0.3,
+    };
+  });
+  new Chart(ctx, {
+    type: 'line',
+    plugins: [recessionPlugin],
+    data: { labels: rh.dates, datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: {
+          ticks: { color: '#888', maxTicksLimit: 15, font: { size: 10 } },
+          grid: { color: 'rgba(255,255,255,0.04)' },
+        },
+        y: {
+          stacked: true, min: 0, max: 100,
+          ticks: { color: '#888', callback: function(v) { return v + '%'; }, font: { size: 10 } },
+          grid: { color: 'rgba(255,255,255,0.06)' },
+        }
+      },
+      plugins: {
+        tooltip: {
+          backgroundColor: '#1a1a24', titleColor: '#f0f0f5', bodyColor: '#ccc',
+          borderColor: '#333', borderWidth: 1,
+          callbacks: {
+            label: function(ctx) { return ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + '%'; }
+          }
+        },
+        legend: {
+          labels: { color: '#aaa', usePointStyle: true, pointStyle: 'rect', font: { size: 11 } }
+        },
+        zoom: {
+          pan: { enabled: true, mode: 'x' },
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' }
+        }
+      }
+    }
+  });
+})();
+{% endif %}
+
+// ── Walk-Forward Regime Timeline ──
+{% if data.wf_regime_history or data.regime_history_filtered %}
+(function() {
+  var rh = {{ (data.wf_regime_history or data.regime_history_filtered) | tojson }};
+  var ctx = document.getElementById('regime-timeline-wf');
+  if (!ctx || !rh) return;
+  var regimeColors = {
+    'Early Recovery': { bg: 'rgba(39,174,96,0.7)',  border: '#27ae60' },
+    'Reflation':      { bg: 'rgba(243,156,18,0.7)', border: '#f39c12' },
+    'Stagflation':    { bg: 'rgba(176,58,46,0.7)',  border: '#b03a2e' },
+    'Deflation':      { bg: 'rgba(41,128,185,0.7)', border: '#2980b9' },
+  };
+  var regimeOrder = ['Early Recovery', 'Reflation', 'Stagflation', 'Deflation'];
+  var datasets = regimeOrder.map(function(name) {
+    return {
+      label: name, data: rh[name],
+      backgroundColor: regimeColors[name].bg, borderColor: regimeColors[name].border,
+      borderWidth: 0.5, fill: true, pointRadius: 0, tension: 0.3,
+    };
+  });
+  new Chart(ctx, {
+    type: 'line', plugins: [recessionPlugin],
+    data: { labels: rh.dates, datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { ticks: { color: '#888', maxTicksLimit: 12, font: { size: 9 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { stacked: true, min: 0, max: 100,
+          ticks: { color: '#888', callback: function(v) { return v + '%'; }, font: { size: 9 } },
+          grid: { color: 'rgba(255,255,255,0.06)' } }
+      },
+      plugins: {
+        tooltip: { backgroundColor: '#1a1a24', titleColor: '#f0f0f5', bodyColor: '#ccc', borderColor: '#333', borderWidth: 1,
+          callbacks: { label: function(ctx) { return ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + '%'; } } },
+        legend: { labels: { color: '#aaa', usePointStyle: true, pointStyle: 'rect', font: { size: 10 } } },
+        zoom: { pan: { enabled: true, mode: 'x' }, zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' } }
+      }
+    }
+  });
+})();
+{% endif %}
+
+// ── Backtest Bar Chart ──
+{% if data.backtest %}
+(function() {
+  const bt = {{ data.backtest | tojson }};
+  const ctx = document.getElementById('backtest-chart');
+  if (!ctx) return;
+  const regimeColorMap = {
+    'Early Recovery': 'rgba(39,174,96,0.8)',
+    'Reflation':      'rgba(243,156,18,0.8)',
+    'Stagflation':    'rgba(176,58,46,0.8)',
+    'Deflation':      'rgba(41,128,185,0.8)',
+  };
+  const colors = bt.regimes.map(function(r) { return regimeColorMap[r] || 'rgba(150,150,150,0.5)'; });
+  new Chart(ctx, {
+    type: 'bar',
+    plugins: [recessionPlugin],
+    data: {
+      labels: bt.dates,
+      datasets: [{
+        label: 'Monthly Return %',
+        data: bt.returns,
+        backgroundColor: colors,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: '#888', maxTicksLimit: 15, font: { size: 9 } }, grid: { display: false } },
+        y: {
+          ticks: { color: '#888', callback: function(v) { return v + '%'; }, font: { size: 10 } },
+          grid: { color: 'rgba(255,255,255,0.06)' },
+        }
+      },
+      plugins: {
+        tooltip: {
+          backgroundColor: '#1a1a24', titleColor: '#f0f0f5', bodyColor: '#ccc',
+          borderColor: '#333', borderWidth: 1,
+          callbacks: {
+            label: function(ctx) {
+              return bt.regimes[ctx.dataIndex] + ': ' + ctx.raw.toFixed(2) + '%';
+            }
+          }
+        },
+        legend: { display: false },
+        zoom: { pan: { enabled: true, mode: 'x' }, zoom: { wheel: { enabled: true }, mode: 'x' } }
+      }
+    }
+  });
+})();
+{% endif %}
+
+// ── Cumulative Return Chart ──
+{% if data.backtest and data.backtest.cumulative %}
+(function() {
+  const bt = {{ data.backtest | tojson }};
+  const ctx = document.getElementById('cumulative-chart');
+  if (!ctx) return;
+  const regimeColorMap = {
+    'Early Recovery': '#27ae60', 'Reflation': '#f39c12',
+    'Stagflation': '#b03a2e', 'Deflation': '#2980b9',
+  };
+  new Chart(ctx, {
+    type: 'line',
+    plugins: [recessionPlugin],
+    data: {
+      labels: bt.dates,
+      datasets: [{
+        label: 'Cumulative Return',
+        data: bt.cumulative,
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.2,
+        fill: false,
+        segment: {
+          borderColor: function(ctx) {
+            return regimeColorMap[bt.regimes[ctx.p1DataIndex]] || '#888';
+          }
+        },
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: '#888', maxTicksLimit: 15, font: { size: 9 } }, grid: { display: false } },
+        y: { ticks: { color: '#888', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.06)' } }
+      },
+      plugins: {
+        tooltip: {
+          backgroundColor: '#1a1a24', titleColor: '#f0f0f5', bodyColor: '#ccc',
+          borderColor: '#333', borderWidth: 1,
+          callbacks: { label: function(c) { return bt.regimes[c.dataIndex] + ': ' + c.raw.toFixed(1); } }
+        },
+        legend: { display: false },
+        zoom: { pan: { enabled: true, mode: 'x' }, zoom: { wheel: { enabled: true }, mode: 'x' } }
+      }
+    }
+  });
+})();
+{% endif %}
 
 // ── Toggleable Individual Charts ──
 const indicators = {{ data.indicators | tojson }};
@@ -1083,6 +1536,46 @@ function togglePoints(chartId) {
     });
   });
 })();
+
+/* ── Theme toggle ── */
+function toggleTheme() {
+  var el = document.documentElement;
+  var btn = document.getElementById('theme-btn');
+  if (el.dataset.theme === 'light') {
+    el.dataset.theme = 'dark';
+    btn.textContent = 'Light';
+    localStorage.setItem('theme', 'dark');
+  } else {
+    el.dataset.theme = 'light';
+    btn.textContent = 'Dark';
+    localStorage.setItem('theme', 'light');
+  }
+}
+// Restore saved theme
+(function() {
+  var saved = localStorage.getItem('theme');
+  if (saved === 'light') {
+    document.documentElement.dataset.theme = 'light';
+    var btn = document.getElementById('theme-btn');
+    if (btn) btn.textContent = 'Dark';
+  }
+})();
+
+/* ── Tooltip positioning (fixed to viewport, avoids overflow stutter) ── */
+document.querySelectorAll('.has-tooltip').forEach(function(el) {
+  el.addEventListener('mouseenter', function() {
+    var tip = el.querySelector('.tooltip-popup');
+    if (!tip) return;
+    var rect = el.getBoundingClientRect();
+    tip.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
+    tip.style.top  = (rect.bottom + 4) + 'px';
+    tip.style.display = 'block';
+  });
+  el.addEventListener('mouseleave', function() {
+    var tip = el.querySelector('.tooltip-popup');
+    if (tip) tip.style.display = 'none';
+  });
+});
 </script>
 {% endif %}
 </body>

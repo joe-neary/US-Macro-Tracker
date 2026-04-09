@@ -85,7 +85,10 @@ CSV_ISM_SVC   = (_find_csv(CSV_FOLDER, "non_manufactur") or _find_csv(CSV_FOLDER
                  or os.path.join(CSV_FOLDER, _CSV_DEFAULTS["ism_svc"]))
 CSV_CHICAGO   = (_find_csv(CSV_FOLDER, "chicago") or _find_csv(CSV_FOLDER, "barometer")
                  or _find_csv(CSV_FOLDER, "mni") or os.path.join(CSV_FOLDER, _CSV_DEFAULTS["chicago_pmi"]))
-CSV_PMI_MAP   = {"ism_mfg": CSV_ISM_MFG, "ism_svc": CSV_ISM_SVC, "chicago_pmi": CSV_CHICAGO}
+CSV_SPG_SVC   = (_find_csv(CSV_FOLDER, "spglobal") or _find_csv(CSV_FOLDER, "sp_services")
+                 or _find_csv(CSV_FOLDER, "sp_global") or _find_csv(CSV_FOLDER, "markit")
+                 or os.path.join(CSV_FOLDER, "sp_global_services_pmi.csv"))
+CSV_PMI_MAP   = {"ism_mfg": CSV_ISM_MFG, "ism_svc": CSV_ISM_SVC, "chicago_pmi": CSV_CHICAGO, "spg_svc": CSV_SPG_SVC}
 CACHE_FILE    = os.path.join(BASE_DIR, ".fred_cache.json")
 CACHE_MAX_AGE = 72000  # seconds (20 hours) - cache is valid for one trading day
 FONT_NAME     = "Calibri"
@@ -164,6 +167,15 @@ C = {
     "ch_be":     "D68910",   # gold - breakeven inflation
     "ch_cfnai":  "6C3483",   # purple - CFNAI
     "ch_epu":    "C62828",   # dark maroon - policy uncertainty
+    "ch_adp":    "16A085",   # sea green - ADP employment
+    "ch_ahe":    "45B39D",   # jade green - average hourly earnings
+    "ch_spg":    "AF601A",   # burnt sienna - S&P US Global Services PMI
+    "ch_pce":    "9B59B6",   # amethyst - core PCE
+    "ch_ip":     "5D6D7E",   # slate - industrial production
+    "ch_ret":    "F1948A",   # salmon - retail sales
+    "ch_imp":    "D4AC0D",   # gold - import prices
+    "ch_dxy":    "1A5276",   # navy - trade-weighted dollar
+    "ch_hs":     "48C9B0",   # mint - housing starts
 
     # Misc UI
     "warn":      "F39C12",   # amber warning (HMM transition risk)
@@ -412,6 +424,25 @@ def _fred(series_id, limit=26):
     _save_disk_cache(disk)
     return result
 
+
+def _fred_vintage(series_id, as_of_date, limit=26):
+    """Fetch FRED data as it was known on a specific date (real-time vintage).
+    as_of_date: 'YYYY-MM-DD' string. Returns data available as of that date."""
+    if not FRED_API_KEY:
+        return []
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    try:
+        time.sleep(0.2)
+        r = requests.get(url, params=dict(
+            series_id=series_id, api_key=FRED_API_KEY,
+            file_type="json", sort_order="desc", limit=limit,
+            realtime_start=as_of_date, realtime_end=as_of_date), timeout=20)
+        r.raise_for_status()
+        return [(o["date"], float(o["value"]))
+                for o in r.json().get("observations", []) if o["value"] != "."]
+    except Exception as e:
+        return []
+
 def fetch_latest(sid):
     raw = _fred(sid, 14)
     return (None, []) if not raw else (raw[0][1], raw[:12])
@@ -446,6 +477,20 @@ def fetch_payrolls():
             for i in range(min(12, len(raw) - 1))]
     return round(raw[0][1] - raw[1][1], 1), hist
 
+def _scale_series(result, factor):
+    """Scale a (value, history) tuple by a constant factor."""
+    val, hist = result
+    if val is None: return None, []
+    return round(val * factor, 2), [(d, round(v * factor, 2)) for d, v in hist]
+
+def fetch_adp():
+    """ADP private payrolls MoM change (thousands). ADPMNUSNERSA is in persons, so /1000."""
+    raw = _fred("ADPMNUSNERSA", 14)
+    if len(raw) < 2: return None, []
+    hist = [(raw[i][0], round((raw[i][1] - raw[i+1][1]) / 1000, 1))
+            for i in range(min(12, len(raw) - 1))]
+    return round((raw[0][1] - raw[1][1]) / 1000, 1), hist
+
 def fetch_fedfunds(months=48):
     raw = _fred("FEDFUNDS", months + 2)
     return raw[:months] if raw else []
@@ -476,6 +521,47 @@ def fetch_level_yoy(sid, limit=26):
 
 # ── CSV HISTORY (PMI series) ──────────────────────────────────────────────────
 
+def _read_reuters_commodity():
+    """Read Reuters Commodities Index CSV, aggregate daily to monthly, compute YoY %.
+    Returns [(YYYY-MM-01, yoy_pct), ...] newest-first, or empty list."""
+    csv_path = os.path.join(CSV_FOLDER, "Reuters_Commodities_Index.csv")
+    if not os.path.isfile(csv_path):
+        return []
+    try:
+        monthly = {}
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("Name"):
+                    continue
+                parts = line.split(",")
+                if len(parts) < 2:
+                    continue
+                try:
+                    date_str, val_str = parts[0].strip(), parts[1].strip()
+                    val = float(val_str)
+                    # Parse DD/MM/YYYY
+                    dd, mm, yyyy = date_str.split("/")
+                    ym = f"{yyyy}-{mm}"
+                    monthly.setdefault(ym, []).append(val)
+                except (ValueError, IndexError):
+                    continue
+        # Monthly means
+        monthly_means = {ym: sum(vals)/len(vals) for ym, vals in monthly.items()}
+        months = sorted(monthly_means.keys())
+        # YoY % change
+        yoy = []
+        for ym in months:
+            yr_ago = f"{int(ym[:4]) - 1}{ym[4:]}"
+            if yr_ago in monthly_means:
+                pct = (monthly_means[ym] - monthly_means[yr_ago]) / monthly_means[yr_ago] * 100
+                yoy.append((f"{ym}-01", round(pct, 2)))
+        yoy.sort(key=lambda x: x[0], reverse=True)  # newest first
+        return yoy
+    except Exception as e:
+        print(f"  [WARN] Reuters commodity CSV read failed: {e}")
+        return []
+
 def _read_pmi_csv(filepath):
     """Read year/month/value CSV → [(YYYY-MM-01, float), ...] newest-first."""
     rows = []
@@ -502,7 +588,8 @@ def _write_pmi_csv(filepath, date_val_dict):
             yr, mo = int(d[:4]), int(d[5:7])
             f.write(f"{yr},{mo},{date_val_dict[d]}\n")
 
-def update_pmi_csvs(mfg_date, mfg_val, svc_date, svc_val, chi_date=None, chi_val=None):
+def update_pmi_csvs(mfg_date, mfg_val, svc_date, svc_val, chi_date=None, chi_val=None,
+                    spg_date=None, spg_val=None):
     """Write new PDF-parsed PMI values into the CSV history files.
     Creates the CSV folder and files if they don't exist."""
     os.makedirs(CSV_FOLDER, exist_ok=True)
@@ -510,6 +597,7 @@ def update_pmi_csvs(mfg_date, mfg_val, svc_date, svc_val, chi_date=None, chi_val
         (CSV_ISM_MFG,  mfg_date, mfg_val, "ISM Mfg"),
         (CSV_ISM_SVC,  svc_date, svc_val,  "ISM Svc"),
         (CSV_CHICAGO,  chi_date, chi_val,   "Chicago PMI"),
+        (CSV_SPG_SVC,  spg_date, spg_val,  "S&P Services"),
     ]
     for csv_path, date, val, label in updates:
         if date is None or val is None:
@@ -537,8 +625,10 @@ def import_pmi_csvs():
             key = "ism_svc"
         elif "chicago" in fl or "barometer" in fl or "mni" in fl:
             key = "chicago_pmi"
+        elif "spglobal" in fl or "sp_global" in fl or "sp_serv" in fl or "markit" in fl:
+            key = "spg_svc"
         else:
-            print(f"  [SKIP] Import CSV not recognised (need manuf/serv/chicago in name): {f}")
+            print(f"  [SKIP] Import CSV not recognised (need manuf/serv/chicago/spglobal in name): {f}")
             continue
         mapping.setdefault(key, []).append(os.path.join(IMPORT_FOLDER, f))
     for key, paths in mapping.items():
@@ -612,19 +702,38 @@ def parse_mni_pdf(path):
     val = float(m.group(1)) if m else None
     return _extract_report_month(txt, path), val
 
+def parse_spg_pdf(path):
+    """Parse S&P Global US Services PMI from press release PDF."""
+    txt = _pdf_text(path)
+    if not txt: return None, None
+    # Pattern 1: "Services PMI ... 49.8" or "Business Activity Index ... 49.8"
+    m = re.search(r'(?:Services\s+PMI|Business\s+Activity\s+Index)[^\n]{0,60}?(\d+\.?\d*)', txt, re.IGNORECASE)
+    if not m:
+        # Pattern 2: "recorded 49.8 in March"
+        m = re.search(r'recorded\s+(\d+\.?\d*)\s+in\b', txt, re.IGNORECASE)
+    if not m:
+        # Pattern 3: "fell to 49.8" / "rose to 54.2"
+        m = re.search(r'(?:fell|rose|climbed|dropped|slipped|edged|eased|moved)\s+to\s+(\d+\.?\d*)', txt, re.IGNORECASE)
+    if not m:
+        # Pattern 4: "at 49.8" with PMI-range value
+        m = re.search(r'\bat\s+(\d{2}\.\d)\b', txt)
+    val = float(m.group(1)) if m else None
+    return _extract_report_month(txt, path), val
+
 def parse_reports_folder():
-    mfg_date = mfg_val = svc_date = svc_val = chi_date = chi_val = None
+    mfg_date = mfg_val = svc_date = svc_val = chi_date = chi_val = spg_date = spg_val = None
     if not os.path.isdir(ISM_FOLDER):
         print(f"  [WARN] Reports folder not found: {ISM_FOLDER}")
-        return mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val
+        return mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val, spg_date, spg_val
 
     for fname in sorted(os.listdir(ISM_FOLDER)):
         if not fname.lower().endswith(".pdf"): continue
         fpath = os.path.join(ISM_FOLDER, fname)
         fl    = fname.lower()
         is_mni = "mni" in fl or "barometer" in fl or "chi" in fl
-        is_mfg = (not is_mni) and ("manuf" in fl)
-        is_svc = (not is_mni) and ("ser" in fl or "non-manuf" in fl
+        is_spg = "spglobal" in fl or "sp_global" in fl or "s&p" in fl or "markit" in fl
+        is_mfg = (not is_mni) and (not is_spg) and ("manuf" in fl)
+        is_svc = (not is_mni) and (not is_spg) and ("ser" in fl or "non-manuf" in fl
                                    or "nonmanuf" in fl or "non_manuf" in fl)
         if is_mni:
             d, v = parse_mni_pdf(fpath)
@@ -633,6 +742,13 @@ def parse_reports_folder():
                 print(f"  PDF -> Chicago PMI        {v:5.1f}   ({d})")
             else:
                 print(f"  [WARN] Chicago PMI extraction failed: {fname}")
+        elif is_spg:
+            d, v = parse_spg_pdf(fpath)
+            if v is not None:
+                spg_date, spg_val = d, v
+                print(f"  PDF -> S&P Services PMI   {v:5.1f}   ({d})")
+            else:
+                print(f"  [WARN] S&P Services PMI extraction failed: {fname}")
         elif is_mfg:
             d, v = parse_ism_pdf(fpath)
             if v is not None:
@@ -648,9 +764,9 @@ def parse_reports_folder():
             else:
                 print(f"  [WARN] ISM Svc PMI extraction failed: {fname}")
         else:
-            print(f"  [SKIP] Unrecognised PDF (rename to include manuf/serv/mni): {fname}")
+            print(f"  [SKIP] Unrecognised PDF (rename to include manuf/serv/mni/spglobal): {fname}")
 
-    return mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val
+    return mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val, spg_date, spg_val
 
 
 # ── ISM MANUAL INPUT WORKBOOK ─────────────────────────────────────────────────
@@ -660,25 +776,25 @@ MI_DATA_ROW = 5
 
 def _mi_col_headers():
     return ["Date (YYYY-MM-DD)", "ISM Manufacturing PMI",
-            "ISM Non-Manufacturing PMI", "Chicago PMI", "Source / Notes"]
+            "ISM Non-Manufacturing PMI", "Chicago PMI",
+            "S&P US Global Services PMI", "Source / Notes"]
 
 def create_manual_input_if_needed():
     if os.path.exists(MANUAL_FILE): return
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Monthly PMI Data"
     ws.sheet_view.showGridLines = False
-    set_widths(ws, [2, 18, 22, 22, 18, 44])
+    set_widths(ws, [2, 18, 22, 22, 18, 24, 44])
     rh(ws, 1, 44); rh(ws, 2, 20); rh(ws, 3, 20); rh(ws, 4, 28)
-    M(ws, 1, 2, 1, 6,
-      "ISM & CHICAGO PMI - Monthly Data Log (Auto-populated from PDFs)",
+    M(ws, 1, 2, 1, 7,
+      "PMI Monthly Data Log (Auto-populated from PDFs)",
       bg=C["chart_hdr"], fc="FFFFFF", bold=True, size=14, h="left")
-    M(ws, 2, 2, 2, 6,
+    M(ws, 2, 2, 2, 7,
       "This file is read automatically by economic_tracker.py on every run.  "
-      "Drop the latest ISM and MNI PDFs into 'Reports' and re-run.",
+      "Drop the latest ISM, MNI, and S&P Global PDFs into 'Reports' and re-run.",
       bg=C["lgray"], fc=C["dgray"], size=9, italic=True, h="left")
-    M(ws, 3, 2, 3, 6,
-      "ISM Manufacturing: 1st business day  |  "
-      "ISM Non-Mfg: 3rd business day  |  "
-      "Chicago PMI (MNI): last business day of month",
+    M(ws, 3, 2, 3, 7,
+      "ISM Mfg: 1st bday  |  ISM Non-Mfg: 3rd bday  |  "
+      "Chicago PMI (MNI): last bday  |  S&P Services: late month",
       bg="FFF8DC", fc=C["input_fc"], size=9, italic=True, h="left")
     for ci, hdr in enumerate(_mi_col_headers(), 2):
         W(ws, MI_HDR_ROW, ci, hdr, bg=C["col_hdr"], fc="FFFFFF",
@@ -694,11 +810,11 @@ def _mi_find_row_for_month(ws, month_str):
     return None
 
 def update_manual_input(mfg_date, mfg_val, svc_date, svc_val,
-                        chi_date=None, chi_val=None):
+                        chi_date=None, chi_val=None, spg_date=None, spg_val=None):
     create_manual_input_if_needed()
     wb = openpyxl.load_workbook(MANUAL_FILE)
     ws = wb["Monthly PMI Data"]
-    report_date = mfg_date or svc_date or chi_date
+    report_date = mfg_date or svc_date or chi_date or spg_date
     if not report_date:
         print("  No report date - skipping data log update"); wb.close(); return
 
@@ -710,11 +826,11 @@ def update_manual_input(mfg_date, mfg_val, svc_date, svc_val,
             cell = ws.cell(existing_row, col)
             if val is not None and cell.value in (None, ""):
                 cell.value = val
-        _patch(3, mfg_val); _patch(4, svc_val); _patch(5, chi_val)
-        src = ws.cell(existing_row, 6)
+        _patch(3, mfg_val); _patch(4, svc_val); _patch(5, chi_val); _patch(6, spg_val)
+        src = ws.cell(existing_row, 7)
         if not src.value: src.value = "PDF auto-extracted"
         wb.save(MANUAL_FILE)
-        print(f"  Data log patched  {month_str}  MFG={mfg_val}  SVC={svc_val}  CHI={chi_val}")
+        print(f"  Data log patched  {month_str}  MFG={mfg_val}  SVC={svc_val}  CHI={chi_val}  SPG={spg_val}")
         return
 
     next_row = MI_DATA_ROW
@@ -727,19 +843,20 @@ def update_manual_input(mfg_date, mfg_val, svc_date, svc_val,
               mfg_val if mfg_val is not None else "",
               svc_val if svc_val is not None else "",
               chi_val if chi_val is not None else "",
+              spg_val if spg_val is not None else "",
               "PDF auto-extracted"]
     for ci, v in enumerate(vals, 2):
         c = ws.cell(row=next_row, column=ci, value=v)
         c.fill = _fill(row_bg); c.font = _font(size=9, bold=(ci == 2))
-        c.alignment = _align(h="center" if ci != 6 else "left")
+        c.alignment = _align(h="center" if ci != 7 else "left")
         c.border = _border_all()
     ws.row_dimensions[next_row].height = 20
     for r in range(MI_DATA_ROW, next_row + 1):
         stripe = C["row0"] if (r - MI_DATA_ROW) % 2 == 0 else C["row1"]
-        for ci in range(2, 7):
+        for ci in range(2, 8):
             ws.cell(r, ci).fill = _fill(stripe)
     wb.save(MANUAL_FILE)
-    print(f"  Data log updated  {month_str}  MFG={mfg_val}  SVC={svc_val}  CHI={chi_val}")
+    print(f"  Data log updated  {month_str}  MFG={mfg_val}  SVC={svc_val}  CHI={chi_val}  SPG={spg_val}")
 
 def read_manual_input():
     empty = {"ism_mfg": (None, []), "ism_svc": (None, []), "chicago_pmi": (None, [])}
@@ -772,15 +889,26 @@ RULES = {
         (lambda v: True,    "neutral",         "Moderate unemployment - labour market within historical norms (4-6.5%)",  "Neutral - Hold rates"),
     ],
     "initial_claims": [
-        (lambda v: v > 350_000, "contractionary", "Elevated layoffs signal a weakening labour market",          "Expansionary - Cut rates / QE"),
-        (lambda v: v < 250_000, "expansionary",   "Low jobless claims reflect a healthy labour market",          "Contractionary - Hike rates / QT"),
-        (lambda v: True,        "neutral",         "Claims within the normal 250-350k range",                    "Neutral - Hold rates"),
+        (lambda v: v > 350, "contractionary", "Elevated layoffs signal a weakening labour market",          "Expansionary - Cut rates / QE"),
+        (lambda v: v < 250, "expansionary",   "Low jobless claims reflect a healthy labour market",          "Contractionary - Hike rates / QT"),
+        (lambda v: True,    "neutral",         "Claims within the normal 250-350k range",                    "Neutral - Hold rates"),
     ],
     "nonfarm_payrolls": [
         (lambda v: v > 250, "expansionary",   "Robust hiring - payrolls growing well above trend",            "Contractionary - Hike rates / QT"),
         (lambda v: v < 0,   "contractionary", "Net job losses - economy actively shedding workers",           "Expansionary - Cut rates / QE"),
         (lambda v: v < 50,  "contractionary", "Near-stall job creation - economy losing momentum",            "Expansionary - Cut rates / QE"),
         (lambda v: True,    "neutral",         "Moderate job creation within the 50-250k range",              "Neutral - Hold rates"),
+    ],
+    "adp": [
+        (lambda v: v > 200, "expansionary",   "Strong private hiring - ADP well above trend",                 "Contractionary - Hike rates / QT"),
+        (lambda v: v < 0,   "contractionary", "Net private job losses - economy shedding workers",            "Expansionary - Cut rates / QE"),
+        (lambda v: v < 50,  "contractionary", "Near-stall private hiring - economy losing momentum",          "Expansionary - Cut rates / QE"),
+        (lambda v: True,    "neutral",         "Moderate private hiring within the 50-200k range",            "Neutral - Hold rates"),
+    ],
+    "ahe_yoy": [
+        (lambda v: v > 4.0, "contractionary", "Wage growth above 4% - wage-price spiral risk, Fed will tighten",  "Contractionary - Hike rates / QT"),
+        (lambda v: v < 2.0, "contractionary", "Wage growth below 2% - labour market slack, weak consumer spending", "Expansionary - Cut rates / QE"),
+        (lambda v: True,    "neutral",         "Wage growth in the 2-4% range - consistent with stable inflation", "Neutral - Hold rates"),
     ],
     "cpi_yoy": [
         (lambda v: v > 2.5, "contractionary", "Inflation well above the 2% target - purchasing power eroding", "Contractionary - Hike rates / QT"),
@@ -792,9 +920,14 @@ RULES = {
         (lambda v: v < 1.8, "expansionary",   "Core inflation below target - deflationary risk",             "Expansionary - Cut rates / QE"),
         (lambda v: True,    "neutral",         "Core inflation near the 2% target (1.8-2.5% range)",         "Neutral - Hold rates"),
     ],
+    "core_pce_yoy": [
+        (lambda v: v > 2.5, "contractionary", "Core PCE above target - the Fed's preferred gauge is elevated",  "Contractionary - Hike rates / QT"),
+        (lambda v: v < 1.8, "expansionary",   "Core PCE below target - room for policy easing",                 "Expansionary - Cut rates / QE"),
+        (lambda v: True,    "neutral",         "Core PCE near the 2% target (1.8-2.5% range)",                  "Neutral - Hold rates"),
+    ],
     "ppi_mom": [
         (lambda v: v > 0.5, "contractionary", "Elevated producer prices likely to feed through to CPI",      "Contractionary - Hike rates / QT"),
-        (lambda v: v < 0.0, "contractionary", "Falling producer prices - deflationary risk signals a cooling economy", "Expansionary - Cut rates / QE"),
+        (lambda v: v < 0.0, "neutral",         "Falling producer prices - benign if growth holds, watch for demand weakness", "Neutral - Hold rates"),
         (lambda v: True,    "neutral",         "Producer price growth contained within 0-0.5% MoM",          "Neutral - Hold rates"),
     ],
     "crb_yoy": [
@@ -812,6 +945,11 @@ RULES = {
         (lambda v: v < 50, "contractionary", "Services sector in contraction - reading below 50",            "Expansionary - Cut rates / QE"),
         (lambda v: True,   "neutral",         "Moderate services expansion - reading between 50 and 56",     "Neutral - Hold rates"),
     ],
+    "spg_svc": [
+        (lambda v: v > 56, "expansionary",   "Strong services expansion - S&P US Global PMI above 56",         "Contractionary - Hike rates / QT"),
+        (lambda v: v < 50, "contractionary", "Services contraction - S&P US Global PMI below 50",              "Expansionary - Cut rates / QE"),
+        (lambda v: True,   "neutral",         "Moderate services expansion - S&P US Global PMI 50-56",         "Neutral - Hold rates"),
+    ],
     "chicago_pmi": [
         (lambda v: v > 56, "expansionary",   "Strong Chicago-area business activity - reading above 56",     "Contractionary - Hike rates / QT"),
         (lambda v: v < 50, "contractionary", "Chicago-area business activity contracting - below 50",        "Expansionary - Cut rates / QE"),
@@ -819,8 +957,23 @@ RULES = {
     ],
     "consumer_conf": [
         (lambda v: v > 90,  "expansionary",   "Consumer sentiment elevated - households optimistic, spending supported",  "Contractionary - Hike rates / QT"),
-        (lambda v: v < 65,  "contractionary", "Consumer sentiment depressed - households stressed, spending at risk",     "Expansionary - Cut rates / QE"),
+        (lambda v: v < 57,  "contractionary", "Consumer sentiment deeply depressed - households stressed, spending at risk", "Expansionary - Cut rates / QE"),
         (lambda v: True,    "neutral",         "Consumer sentiment within the normal 65-90 range",                        "Neutral - Hold rates"),
+    ],
+    "indpro_mom": [
+        (lambda v: v > 0.3,  "expansionary",   "Industrial output expanding - factories ramping up",            "Contractionary - Hike rates / QT"),
+        (lambda v: v < -0.2, "contractionary", "Industrial output contracting - manufacturing in decline",      "Expansionary - Cut rates / QE"),
+        (lambda v: True,     "neutral",         "Industrial production flat to marginally positive",             "Neutral - Hold rates"),
+    ],
+    "retail_mom": [
+        (lambda v: v > 0.5,  "expansionary",   "Strong consumer spending - retail sales surging",               "Contractionary - Hike rates / QT"),
+        (lambda v: v < -0.3, "contractionary", "Consumer spending falling - retail sales declining",            "Expansionary - Cut rates / QE"),
+        (lambda v: True,     "neutral",         "Retail sales within normal monthly range",                     "Neutral - Hold rates"),
+    ],
+    "import_yoy": [
+        (lambda v: v > 5.0,  "contractionary", "Import prices surging - tariff cost pass-through to consumers", "Contractionary - Hike rates / QT"),
+        (lambda v: v < -5.0, "expansionary",   "Falling import prices - deflationary, supports purchasing power","Expansionary - Cut rates / QE"),
+        (lambda v: True,     "neutral",         "Import prices within normal range",                            "Neutral - Hold rates"),
     ],
     # ── Leading Indicators ─────────────────────────────────────────────────
     # NOTE: FRED returns OAS in percentage points (e.g. 3.18 = 318bp). Thresholds below are in pct pts.
@@ -865,222 +1018,234 @@ RULES = {
         (lambda v: True,    "neutral",         "CFNAI near zero - economy growing at or near trend",                         "Neutral - Hold rates"),
     ],
     "epu": [
-        (lambda v: v > 200, "contractionary", "Extreme policy uncertainty - crisis-level (historically: GFC, COVID, trade wars)", "Expansionary - Cut rates / QE"),
-        (lambda v: v > 130, "contractionary", "Elevated policy uncertainty - growth headwind from political/trade risk",         "Neutral - Hold rates"),
-        (lambda v: v < 80,  "expansionary",   "Low policy uncertainty - stable policy environment supports growth",              "Contractionary - Hike rates / QT"),
+        (lambda v: v > 300, "contractionary", "Extreme policy uncertainty - crisis-level (historically: GFC, COVID, trade wars)", "Expansionary - Cut rates / QE"),
+        (lambda v: v > 200, "contractionary", "Elevated policy uncertainty - growth headwind from political/trade risk",         "Neutral - Hold rates"),
+        (lambda v: v < 120, "expansionary",   "Low policy uncertainty - stable policy environment supports growth",              "Contractionary - Hike rates / QT"),
         (lambda v: True,    "neutral",         "Policy uncertainty within normal range (80-130)",                                "Neutral - Hold rates"),
+    ],
+    "dxy": [
+        (lambda v: v > 120, "contractionary", "Strong dollar - compresses exports, tightens global financial conditions",   "Neutral - Hold rates"),
+        (lambda v: v < 100, "expansionary",   "Weak dollar - supports exports and commodity prices",                       "Neutral - Hold rates"),
+        (lambda v: True,    "neutral",         "Dollar within normal trade-weighted range (100-120)",                       "Neutral - Hold rates"),
+    ],
+    "housing_starts": [
+        (lambda v: v > 10,  "expansionary",   "Housing construction accelerating - residential investment expanding",       "Contractionary - Hike rates / QT"),
+        (lambda v: v < -15, "contractionary", "Housing construction falling sharply - rate-sensitive sector under stress",  "Expansionary - Cut rates / QE"),
+        (lambda v: True,    "neutral",         "Housing starts within normal range",                                       "Neutral - Hold rates"),
     ],
 }
 
 METRIC_TOOLTIPS = {
     "unemployment_rate": (
-        "WHY THIS MATTERS\n"
-        "The broadest measure of labour market health. Rising unemployment cuts consumer spending "
-        "(70% of GDP) and triggers negative feedback through housing and credit.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "< 4.0% (Expansionary): Below the CBO's natural rate estimate (~4.4%). Historically tight - "
-        "last seen 2019, 2000, 1969. Signals wage pressure and overheating risk.\n"
-        "4.0 - 6.5% (Neutral): Normal cyclical range covering most non-recessionary periods since 1970.\n"
-        "> 6.5% (Contractionary): Fed's forward guidance threshold (Bernanke 2012). Every reading above "
-        "6.5% since 1948 has coincided with recession or early recovery.\n\n"
-        "LIMITATIONS: Lagging indicator - rises 3-6 months after recession starts. Doesn't capture "
-        "underemployment (U-6) or labour force dropout."
+        "Broadest measure of labour market health. Rising unemployment cuts consumer "
+        "spending (70% of GDP) and feeds through to housing and credit.\n\n"
+        "Thresholds\n"
+        "< 4.0%: Below the CBO natural rate (~4.4%). Tight - wage pressure risk.\n"
+        "4.0 - 6.5%: Normal cyclical range.\n"
+        "> 6.5%: Bernanke's forward guidance threshold. Every reading above 6.5% "
+        "since 1948 has coincided with recession.\n\n"
+        "Note: Lagging - rises 3-6 months after recession starts. Misses U-6 underemployment."
     ),
     "initial_claims": (
-        "WHY THIS MATTERS\n"
-        "The timeliest labour market indicator - reported weekly. Rising claims are the first signal "
-        "of layoffs spreading through the economy.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "< 250k (Expansionary): Consistent with a healthy, tightening labour market.\n"
-        "250 - 350k (Neutral): Normal churn range.\n"
-        "> 350k (Contractionary): Every sustained move above 350k since 1967 has preceded or coincided "
-        "with recession.\n\n"
-        "LIMITATIONS: Weekly volatility; use the 4-week moving average (IC4WSA). Seasonal adjustment "
-        "can distort around holidays."
+        "Timeliest labour market indicator - reported weekly. First signal of layoffs "
+        "spreading through the economy.\n\n"
+        "< 250k: Healthy labour market. 250-350k: Normal churn. > 350k: Every sustained "
+        "move above this since 1967 preceded recession.\n\n"
+        "Watch out: Weekly noise is large. We use the 4-week moving average (IC4WSA). "
+        "Seasonal adjustment can distort around holidays."
     ),
     "nonfarm_payrolls": (
-        "WHY THIS MATTERS\n"
-        "The headline employment number from the BLS Establishment Survey. Positive = net hiring; "
-        "negative = economy actively shedding jobs.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 250k (Expansionary): Well above the ~100k needed to keep pace with population growth.\n"
-        "50 - 250k (Neutral): Moderate but positive job creation.\n"
-        "< 50k / negative (Contractionary): Near-stall or net losses - recession territory.\n\n"
-        "LIMITATIONS: Subject to large revisions (birth-death model). Single-month readings can "
-        "be distorted by strikes, weather, census hiring."
+        "The headline jobs number from BLS. Positive = net hiring, negative = economy "
+        "shedding workers. The ~100k monthly pace is roughly breakeven for population growth.\n\n"
+        "> 250k: Strong. 50-250k: Moderate. < 50k: Near-stall territory.\n\n"
+        "Subject to large revisions (birth-death model). Single months can be distorted "
+        "by strikes, weather, or census hiring."
+    ),
+    "adp": (
+        "ADP processes payroll for ~25% of US private workers and reports 1-2 days before "
+        "BLS. Acts as an early read on NFP direction.\n\n"
+        "> 200k: Strong private hiring. 50-200k: Moderate. < 50k: Near-stall.\n\n"
+        "Private sector only (no government). Can diverge from BLS due to different "
+        "methodology. Revised with each release."
+    ),
+    "ahe_yoy": (
+        "Average hourly earnings for all private-sector employees. The key link between the "
+        "labour market and inflation - when wages accelerate above ~4%, firms pass costs to "
+        "consumers, risking a wage-price spiral.\n\n"
+        "Thresholds\n"
+        "> 4.0% (Contractionary): Wage-price spiral territory. The Fed will tighten.\n"
+        "2.0 - 4.0% (Neutral): Healthy wage growth consistent with the 2% inflation target.\n"
+        "< 2.0% (Contractionary): Slack in the labour market, weak consumer spending ahead.\n\n"
+        "Note: Released alongside NFP on the first Friday. Subject to revisions and "
+        "compositional effects (if low-wage workers lose jobs, average wages rise mechanically)."
     ),
     "cpi_yoy": (
-        "WHY THIS MATTERS\n"
-        "The primary inflation gauge for consumers and the benchmark the Fed targets (via PCE proxy). "
-        "Persistent above-target inflation erodes real wages and purchasing power.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 2.5% (Contractionary): Meaningfully above the 2% target. Fed likely to tighten.\n"
-        "1.5 - 2.5% (Neutral): On or near the 2% target - consistent with price stability.\n"
-        "< 1.5% (Expansionary): Below target - allows the Fed room to ease policy.\n\n"
-        "LIMITATIONS: Lagging - reflects prices already paid. Shelter component (35% of CPI) lags "
-        "actual rent changes by 12+ months."
+        "Primary consumer inflation gauge. Persistent above-target readings erode real wages "
+        "and force the Fed to tighten.\n\n"
+        "> 2.5%: Above target, hawkish. 1.5-2.5%: Near target. < 1.5%: Room to ease.\n\n"
+        "Lagging - reflects prices already paid. The shelter component (35% of CPI) lags "
+        "actual rents by 12+ months, which can mask turning points."
     ),
     "core_cpi_yoy": (
-        "WHY THIS MATTERS\n"
-        "CPI excluding food and energy - strips out volatile components to show underlying trend. "
-        "The Fed watches core measures more closely than headline for policy decisions.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 2.5% (Contractionary): Sticky price pressures embedded in the economy.\n"
-        "1.8 - 2.5% (Neutral): Near target.\n"
-        "< 1.8% (Expansionary): Deflationary risk.\n\n"
-        "LIMITATIONS: Excludes energy which drives business costs and transport. Owner's Equivalent "
-        "Rent dominates the index."
+        "CPI ex food and energy - strips out volatile components to reveal the underlying "
+        "trend. The Fed watches core more than headline for policy decisions.\n\n"
+        "> 2.5%: Sticky pressures. 1.8-2.5%: Near target. < 1.8%: Deflation risk.\n\n"
+        "Owner's Equivalent Rent dominates the index. Excludes energy costs which still "
+        "matter for businesses and transport."
+    ),
+    "core_pce_yoy": (
+        "The Fed's actual inflation target. Core PCE (Personal Consumption Expenditures "
+        "excluding food and energy) typically runs 30-50bp below CPI because it accounts "
+        "for consumer substitution and has broader coverage including employer-paid healthcare.\n\n"
+        "When CPI reads 2.7%, Core PCE might read 2.3% - the policy implication is very different. "
+        "This is the number the FOMC references in its statement and dot plot.\n\n"
+        "Thresholds\n"
+        "> 2.5%: Above target, Fed will lean hawkish.\n"
+        "1.8 - 2.5%: Near the 2% target.\n"
+        "< 1.8%: Below target, room to ease.\n\n"
+        "Note: Released late month by BEA, ~2 weeks after CPI. Same month, different methodology."
     ),
     "ppi_mom": (
-        "WHY THIS MATTERS\n"
-        "Measures price changes at the producer level. PPI changes tend to feed through to CPI "
-        "with a 3-6 month lag - a leading indicator of consumer inflation.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 0.5% MoM (Contractionary): Inflationary pressure building in the pipeline.\n"
-        "0 - 0.5% (Neutral): Normal producer price growth.\n"
-        "< 0% (Contractionary): Falling producer prices signal demand weakness.\n\n"
-        "LIMITATIONS: Commodity-heavy - oil swings can dominate single months."
+        "Producer prices - what factories pay for inputs. PPI feeds through to CPI with a "
+        "3-6 month lag, making it a leading indicator of consumer inflation.\n\n"
+        "> 0.5% MoM: Pipeline pressure building. 0-0.5%: Normal. < 0%: Falling input costs "
+        "(benign if growth is holding, worrying if demand is collapsing).\n\n"
+        "Commodity-heavy - oil swings can dominate single months."
     ),
     "crb_yoy": (
-        "WHY THIS MATTERS\n"
-        "Commodity prices are an early signal of global demand and inflationary pipeline pressure. "
-        "Surging commodities squeeze margins; crashing commodities signal demand collapse.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> +10% YoY (Contractionary): Inflationary - cost pressures building.\n"
-        "-10% to +10% (Neutral): Normal range.\n"
-        "< -10% YoY (Contractionary): Deflationary demand signal.\n\n"
-        "LIMITATIONS: Uses IMF All-Commodity Price Index as CRB proxy. Energy-weighted."
+        "Broad commodity basket (IMF All-Commodity Index as CRB proxy). Early signal of "
+        "global demand and inflationary pipeline pressure.\n\n"
+        "> +10% YoY: Inflationary squeeze on margins. < -10%: Demand collapsing.\n\n"
+        "Energy-weighted. Also reflects supply disruptions (OPEC, weather) not just demand."
     ),
     "ism_mfg": (
-        "WHY THIS MATTERS\n"
-        "The ISM Manufacturing PMI is a diffusion index surveying 300+ purchasing managers. "
-        "50 = no change. Above 50 = expansion. It leads GDP by 1-2 quarters.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 56 (Expansionary): Strong expansion - historically correlates with >3% GDP growth.\n"
-        "50 - 56 (Neutral): Moderate expansion.\n"
-        "< 50 (Contractionary): Manufacturing contraction - preceded 7 of last 8 recessions.\n\n"
-        "LIMITATIONS: Manufacturing is only ~11% of US GDP. Services matter more now."
+        "Diffusion index surveying 300+ purchasing managers. 50 = no change, above = expansion. "
+        "Leads GDP by 1-2 quarters.\n\n"
+        "> 56: Strong - correlates with >3% GDP growth. 50-56: Moderate expansion. "
+        "< 50: Contraction - preceded 7 of last 8 recessions.\n\n"
+        "Manufacturing is only ~11% of GDP now. Services matter more, but this still moves markets."
     ),
     "ism_svc": (
-        "WHY THIS MATTERS\n"
-        "The ISM Services PMI covers the ~89% of the economy that manufacturing misses. "
-        "A reading below 50 is rare and historically serious.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 56 (Expansionary): Strong services growth.\n"
-        "50 - 56 (Neutral): Moderate expansion.\n"
-        "< 50 (Contractionary): Services contraction - very rare outside recessions.\n\n"
-        "LIMITATIONS: Shorter history than ISM Manufacturing (since 1997)."
+        "Covers the ~89% of the economy that manufacturing misses. A reading below 50 is "
+        "rare and historically serious - services contraction almost always means recession.\n\n"
+        "> 56: Strong. 50-56: Moderate. < 50: Contraction.\n\n"
+        "Shorter history than ISM Manufacturing (since 1997). New orders sub-index is the "
+        "most forward-looking component."
+    ),
+    "spg_svc": (
+        "S&P Global's services PMI - surveys ~400 US companies. Released 1-2 days before "
+        "ISM Services, so acts as a preview of the dominant sector.\n\n"
+        "> 56: Strong. 50-56: Moderate. < 50: Contraction.\n\n"
+        "Not on FRED - requires manual CSV or PDF update. Can diverge from ISM due to "
+        "different sample and methodology. History only from 2009."
     ),
     "chicago_pmi": (
-        "WHY THIS MATTERS\n"
-        "Regional PMI covering the Chicago/Midwest manufacturing area. Released the day before "
-        "ISM Manufacturing, so traders use it as a preview.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "Same 50-based diffusion index as ISM. Thresholds mirror ISM Manufacturing.\n\n"
-        "LIMITATIONS: Regional only - Midwest manufacturing. Weighted less than national ISM "
-        "in the overall signal."
+        "Regional manufacturing PMI for the Chicago/Midwest area. Released the day before "
+        "ISM Mfg, so traders use it as a preview.\n\n"
+        "Same 50-based diffusion index as ISM. Regional only - carries less weight than "
+        "the national ISM in the overall signal."
     ),
     "consumer_conf": (
-        "WHY THIS MATTERS\n"
-        "University of Michigan Consumer Sentiment Survey. Consumer spending is 70% of GDP, "
-        "so confidence drives spending decisions.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 90 (Expansionary): Historically associated with strong consumer spending.\n"
-        "65 - 90 (Neutral): Normal range.\n"
-        "< 65 (Contractionary): Depressed sentiment - consumers pull back spending.\n\n"
-        "LIMITATIONS: Lagging and survey-based. Can diverge from actual spending."
+        "University of Michigan sentiment survey. Consumer spending is 70% of GDP so confidence "
+        "matters, but sentiment has structurally shifted down post-COVID - don't over-read it.\n\n"
+        "> 90: Strong. 57-90: Normal. < 57: Deeply depressed.\n\n"
+        "Survey-based - can diverge from actual spending data (retail sales is the hard measure)."
     ),
     "hy_spread": (
-        "WHY THIS MATTERS\n"
-        "High-yield credit spreads measure the risk premium investors demand for holding junk bonds "
-        "over Treasuries. Widening spreads = investors fleeing to safety. Leading indicator - "
-        "widens before every recession.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 500bp / 5.0% (Contractionary): Credit stress - risk-off. GFC peaked at 2000bp.\n"
-        "350 - 500bp (Neutral): Normal credit conditions.\n"
-        "< 350bp (Expansionary): Very tight - strong risk appetite.\n\n"
-        "LIMITATIONS: Can stay tight for extended periods before snapping wider."
+        "Risk premium on junk bonds over Treasuries. Widening = investors fleeing to safety. "
+        "One of the best leading indicators - widens before every recession.\n\n"
+        "> 5%: Credit stress (GFC peaked at ~20%). 3.5-5%: Normal. < 3.5%: Very tight, "
+        "strong risk appetite.\n\n"
+        "Can stay tight for years before snapping wider. The speed of widening matters as "
+        "much as the level."
     ),
     "ig_spread": (
-        "WHY THIS MATTERS\n"
-        "Investment-grade credit spreads. Less noisy than HY - filters out junk-specific risk "
-        "to show broad corporate credit health.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 150bp (Contractionary): Investment-grade stress.\n"
-        "100 - 150bp (Neutral): Normal.\n"
-        "< 100bp (Expansionary): Benign credit conditions.\n\n"
-        "LIMITATIONS: Can lag HY in detecting stress."
+        "Investment-grade corporate bond spreads. Less noisy than HY - filters out "
+        "junk-specific risk to show broad credit health.\n\n"
+        "> 1.5%: Stress. 1.0-1.5%: Normal. < 1.0%: Benign.\n\n"
+        "Tends to lag HY in detecting stress but is a cleaner signal of systemic risk."
     ),
     "t10y3m": (
-        "WHY THIS MATTERS\n"
-        "The 10Y minus 3M Treasury spread. The most reliable recession predictor - every US recession "
-        "since 1960 was preceded by inversion of this curve (0 false positives, 0 misses).\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "< 0 (Contractionary): Inverted - recession typically follows in 12-18 months.\n"
-        "0 - 1.0% (Neutral): Flat - transition zone.\n"
-        "> 1.0% (Expansionary): Steep - growth-supportive.\n\n"
-        "LIMITATIONS: Lead time is long and variable (6-24 months). Can stay inverted for extended periods."
+        "10-year minus 3-month Treasury spread. The single most reliable recession predictor - "
+        "every US recession since 1960 was preceded by inversion (< 0). Zero false positives.\n\n"
+        "< 0: Inverted, recession typically follows in 12-18 months. 0-1%: Flat. > 1%: Steep.\n\n"
+        "Lead time is long and variable (6-24 months). Was inverted for ~2 years in 2022-24."
     ),
     "building_permits": (
-        "WHY THIS MATTERS\n"
-        "New housing permits predict construction activity 6-12 months ahead. Housing is the "
-        "most interest-rate-sensitive sector - it turns first.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "< -10% YoY (Contractionary): Housing cycle turning down. Predicted 8 of last 9 recessions.\n"
-        "-10% to +5% (Neutral): Normal range.\n"
-        "> +5% YoY (Expansionary): Housing construction expanding.\n\n"
-        "LIMITATIONS: Noisy month-to-month. Regional variation is large."
+        "Housing permits predict construction activity 6-12 months ahead. Housing is the most "
+        "rate-sensitive sector - it turns first in every cycle.\n\n"
+        "< -10% YoY: Cycle turning down (predicted 8 of 9 recessions). > +5%: Expanding.\n\n"
+        "Noisy month-to-month. Regional variation is large."
     ),
     "jolts_openings": (
-        "WHY THIS MATTERS\n"
-        "Job openings measure labour demand - falls before unemployment rises. A leading indicator "
-        "of whether employers are pulling back.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "< -15% YoY (Contractionary): Sharp demand decline.\n"
-        "Normal range in between.\n"
-        "> +10% YoY (Expansionary): Strong demand for workers.\n\n"
-        "LIMITATIONS: 2-month reporting lag. Openings can be 'phantom' postings."
+        "Job openings = labour demand. Falls before unemployment rises, making it a genuine "
+        "leading indicator of whether employers are pulling back.\n\n"
+        "< -15% YoY: Sharp decline. > +10%: Strong demand.\n\n"
+        "2-month reporting lag. Some openings are 'phantom' postings that never get filled."
     ),
     "jolts_quits": (
-        "WHY THIS MATTERS\n"
-        "The quits rate measures worker confidence - people quit when they're confident of finding "
-        "something better. Falls before recessions.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "< 2.0% (Contractionary): Workers afraid to leave - labour market cooling.\n"
-        "2.0 - 2.5% (Neutral): Normal turnover.\n"
-        "> 2.5% (Expansionary): High voluntary turnover - confident workers.\n\n"
-        "LIMITATIONS: Same 2-month lag as JOLTS openings."
+        "Quits rate = worker confidence. People quit when they're sure they'll find something "
+        "better. Falls before recessions.\n\n"
+        "< 2.0%: Workers afraid to leave. 2.0-2.5%: Normal. > 2.5%: Confident workers.\n\n"
+        "Same 2-month lag as JOLTS openings. Normalised sharply from the 2022 'Great Resignation' peak."
     ),
     "breakeven_10y": (
-        "WHY THIS MATTERS\n"
-        "Market-implied inflation expectations from TIPS vs nominal Treasury spread. Forward-looking "
-        "unlike CPI. If markets expect inflation to stay high, it usually does.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 2.5% (Contractionary): Market expects above-target inflation.\n"
-        "1.8 - 2.5% (Neutral): Expectations anchored near 2%.\n"
-        "< 1.8% (Contractionary): Deflation risk priced in.\n\n"
-        "LIMITATIONS: Affected by TIPS liquidity premium, not pure inflation expectations."
+        "Market-implied inflation expectations (TIPS vs nominal Treasuries). Forward-looking "
+        "unlike CPI - if markets expect inflation to persist, it usually does.\n\n"
+        "Goldilocks indicator: 1.8-2.5% is anchored near target. Both extremes are bad "
+        "(> 2.5% = inflation risk, < 1.8% = deflation risk).\n\n"
+        "Affected by TIPS liquidity premium, so not pure inflation expectations."
     ),
     "cfnai": (
-        "WHY THIS MATTERS\n"
-        "The Chicago Fed National Activity Index is a weighted average of 85 monthly indicators. "
-        "The single best real-time GDP nowcast. Zero = long-run trend growth.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "< -0.7 (Contractionary): Recession signal - has preceded every recession since 1967.\n"
-        "-0.7 to +0.2 (Neutral): At or near trend growth.\n"
-        "> +0.2 (Expansionary): Above-trend growth.\n\n"
-        "LIMITATIONS: Heavily revised. Monthly noise can be large - use 3-month moving average."
+        "Weighted average of 85 monthly indicators from the Chicago Fed. The single best "
+        "real-time GDP nowcast. Zero = long-run trend growth.\n\n"
+        "< -0.7: Recession signal (preceded every recession since 1967). > +0.2: Above trend.\n\n"
+        "Heavily revised. Monthly noise can be large - the 3-month moving average is more reliable."
     ),
     "epu": (
-        "WHY THIS MATTERS\n"
-        "Economic Policy Uncertainty index captures newspaper coverage + tax code expiration + "
-        "forecaster disagreement. High uncertainty is a growth headwind - firms delay investment.\n\n"
-        "WHY THESE THRESHOLDS\n"
-        "> 200 (Contractionary): Extreme - crisis-level (GFC, COVID, trade wars).\n"
-        "130 - 200 (Contractionary): Elevated - growth headwind.\n"
-        "80 - 130 (Neutral): Normal.\n"
-        "< 80 (Expansionary): Low uncertainty - stable policy supports growth.\n\n"
-        "LIMITATIONS: News-based - can spike on media attention rather than real policy change."
+        "Policy uncertainty index from newspaper coverage + tax code expirations + forecaster "
+        "disagreement. High uncertainty is a growth headwind - firms delay capex.\n\n"
+        "> 300: Extreme (GFC, COVID, trade wars). 200-300: Elevated. < 120: Low/stable.\n\n"
+        "News-driven - can spike on media attention rather than real policy change. "
+        "Thresholds raised from the original Baker-Bloom-Davis levels to reflect the post-2016 normal."
+    ),
+    "indpro_mom": (
+        "One of the 4 series the NBER uses to date recessions. Covers manufacturing, "
+        "mining, and utilities - about 15% of GDP but highly cyclical.\n\n"
+        "Thresholds\n"
+        "> 0.3% MoM: Expanding. < -0.2% MoM: Contracting.\n\n"
+        "Note: Monthly data, released ~2 weeks after month-end. Subject to revisions."
+    ),
+    "retail_mom": (
+        "Hard spending data - what consumers actually bought, not how they feel. "
+        "Consumption is 70% of GDP so this matters more than sentiment surveys.\n\n"
+        "Thresholds\n"
+        "> 0.5% MoM: Strong. < -0.3% MoM: Weak.\n\n"
+        "Watch out: Nominal (not inflation-adjusted). A positive MoM could just be price increases."
+    ),
+    "import_yoy": (
+        "Direct measurement of tariff cost pass-through. When tariffs hit, import prices "
+        "rise and the cost flows through to CPI with a 3-6 month lag. In the current tariff "
+        "environment this is one of the most informative inflation indicators.\n\n"
+        "Thresholds\n"
+        "> 5% YoY: Inflationary (contractionary for purchasing power).\n"
+        "< -5% YoY: Deflationary (expansionary for consumers)."
+    ),
+    "dxy": (
+        "The trade-weighted dollar index. A strong dollar tightens financial conditions "
+        "globally, hurts US exporters, and compresses commodity prices. A weak dollar does "
+        "the opposite.\n\n"
+        "Thresholds\n"
+        "> 120: Contractionary (too strong). < 100: Expansionary (weak, supports exports).\n\n"
+        "Note: This is a daily series aggregated to monthly means."
+    ),
+    "housing_starts": (
+        "Actual construction of new homes - the sharpest interest-rate-sensitive sector. "
+        "Housing leads the broader economy by 6-12 months because it drives employment, "
+        "materials demand, and consumer durables spending.\n\n"
+        "Thresholds\n"
+        "> 10% YoY: Expansionary. < -15% YoY: Contractionary.\n\n"
+        "Note: Complements building permits (which lead starts by 1-2 months)."
     ),
 }
 
@@ -1115,27 +1280,88 @@ INDICATOR_WEIGHTS = {
     # Leading (3x) - predict the future
     "hy_spread": 3.0, "t10y3m": 3.0, "building_permits": 3.0,
     "cfnai": 2.5, "breakeven_10y": 2.5, "epu": 2.5,
-    "jolts_openings": 2.0, "jolts_quits": 2.0, "ig_spread": 2.0,
+    "jolts_openings": 2.0, "jolts_quits": 2.0, "ig_spread": 2.0, "housing_starts": 2.0, "dxy": 1.5,
     # Coincident (2x) - confirm the present
-    "ism_mfg": 2.0, "ism_svc": 2.0, "initial_claims": 2.0, "nonfarm_payrolls": 1.5,
+    "ism_mfg": 2.0, "ism_svc": 2.0, "spg_svc": 2.0, "initial_claims": 2.0,
+    "indpro_mom": 2.0, "retail_mom": 1.5, "import_yoy": 1.5,
+    "nonfarm_payrolls": 1.5, "adp": 1.5, "ahe_yoy": 1.5,
+    "consumer_conf": 2.0, "chicago_pmi": 1.0,
     # Lagging (1x) - confirm the past
     "unemployment_rate": 1.0, "cpi_yoy": 1.5, "core_cpi_yoy": 1.5,
-    "ppi_mom": 1.0, "crb_yoy": 1.5, "consumer_conf": 1.0, "chicago_pmi": 1.0,
+    "core_pce_yoy": 2.0, "ppi_mom": 1.0, "crb_yoy": 1.5,
 }
 
 INDICATOR_TYPE = {
     "hy_spread": "Leading", "ig_spread": "Leading", "t10y3m": "Leading",
     "building_permits": "Leading", "jolts_openings": "Leading",
     "jolts_quits": "Leading", "breakeven_10y": "Leading", "cfnai": "Leading",
-    "epu": "Leading",
-    "ism_mfg": "Coincident", "ism_svc": "Coincident",
-    "initial_claims": "Coincident", "nonfarm_payrolls": "Coincident",
+    "epu": "Leading", "dxy": "Leading", "housing_starts": "Leading",
+    "ism_mfg": "Coincident", "ism_svc": "Coincident", "spg_svc": "Coincident",
+    "indpro_mom": "Coincident", "retail_mom": "Coincident", "import_yoy": "Coincident",
+    "initial_claims": "Coincident", "nonfarm_payrolls": "Coincident", "adp": "Coincident", "ahe_yoy": "Coincident",
     "unemployment_rate": "Lagging", "cpi_yoy": "Lagging",
-    "core_cpi_yoy": "Lagging", "ppi_mom": "Lagging", "crb_yoy": "Lagging",
-    "consumer_conf": "Lagging", "chicago_pmi": "Lagging",
+    "core_cpi_yoy": "Lagging", "core_pce_yoy": "Lagging", "ppi_mom": "Lagging", "crb_yoy": "Lagging",
+    "consumer_conf": "Coincident", "chicago_pmi": "Coincident",
 }
 
 TYPE_COLOR = {"Leading": "0E6655", "Coincident": "2471A3", "Lagging": "7D3C98"}
+
+# ── CONTINUOUS SCORING ───────────────────────────────────────────────────────
+# Each indicator scored on [-1, +1] based on distance from neutral midpoint.
+# Replaces the discrete {-1, 0, +1} mapping for weighted_signal().
+# "goldilocks" indicators are contractionary at BOTH extremes (score <= 0 always).
+
+SCORE_PARAMS = {
+    # Job Market
+    "unemployment_rate": {"mid": 5.25, "scale": 1.25, "invert": True},
+    "initial_claims":    {"mid": 300,  "scale": 50,   "invert": True},
+    "nonfarm_payrolls":  {"mid": 150,  "scale": 100,  "invert": False},
+    "adp":               {"mid": 125,  "scale": 75,   "invert": False},
+    "ahe_yoy":           {"mid": 3.0,  "scale": 1.0,  "goldilocks": True},
+    # Inflation
+    "cpi_yoy":           {"mid": 2.0,  "scale": 0.5,  "invert": True},
+    "core_cpi_yoy":      {"mid": 2.15, "scale": 0.35, "invert": True},
+    "core_pce_yoy":      {"mid": 2.15, "scale": 0.35, "invert": True},
+    "ppi_mom":           {"mid": 0.25, "scale": 0.25, "invert": True},
+    "crb_yoy":           {"mid": 0.0,  "scale": 10.0, "invert": True},
+    # Economic Activities
+    "ism_mfg":           {"mid": 53.0, "scale": 3.0,  "invert": False},
+    "ism_svc":           {"mid": 53.0, "scale": 3.0,  "invert": False},
+    "spg_svc":           {"mid": 53.0, "scale": 3.0,  "invert": False},
+    "chicago_pmi":       {"mid": 53.0, "scale": 3.0,  "invert": False},
+    "consumer_conf":     {"mid": 73.5, "scale": 16.5, "invert": False},
+    "indpro_mom":        {"mid": 0.05, "scale": 0.25, "invert": False},
+    "retail_mom":        {"mid": 0.1,  "scale": 0.4,  "invert": False},
+    "import_yoy":        {"mid": 0.0,  "scale": 5.0,  "invert": True},
+    # Leading Indicators
+    "hy_spread":         {"mid": 4.25, "scale": 0.75, "invert": True},
+    "ig_spread":         {"mid": 1.25, "scale": 0.25, "invert": True},
+    "t10y3m":            {"mid": 0.5,  "scale": 0.5,  "invert": False},
+    "building_permits":  {"mid": -2.5, "scale": 7.5,  "invert": False},
+    "jolts_openings":    {"mid": -2.5, "scale": 12.5, "invert": False},
+    "jolts_quits":       {"mid": 2.25, "scale": 0.25, "invert": False},
+    "breakeven_10y":     {"mid": 2.15, "scale": 0.35, "goldilocks": True},
+    "cfnai":             {"mid": -0.25,"scale": 0.45, "invert": False},
+    "epu":               {"mid": 250,  "scale": 50,   "invert": True},
+    "dxy":               {"mid": 110,  "scale": 10,   "invert": True},
+    "housing_starts":    {"mid": -2.5, "scale": 12.5, "invert": False},
+}
+
+def continuous_score(key, val):
+    """Continuous score in [-1, +1]. Captures magnitude, not just direction."""
+    if val is None:
+        return 0.0
+    p = SCORE_PARAMS.get(key)
+    if p is None:
+        return 0.0
+    mid, scale = p["mid"], p["scale"]
+    if p.get("goldilocks"):
+        s = -abs(val - mid) / scale
+    elif p.get("invert"):
+        s = (mid - val) / scale
+    else:
+        s = (val - mid) / scale
+    return max(-1.0, min(1.0, s))
 
 
 def weighted_signal(data):
@@ -1151,8 +1377,7 @@ def weighted_signal(data):
         val = data.get(key, (None, []))[0]
         if val is None:
             continue
-        p, _, _ = classify(key, val)
-        score = {"expansionary": 1, "neutral": 0, "contractionary": -1}.get(p, 0)
+        score = continuous_score(key, val)
         tier = INDICATOR_TYPE.get(key, "Lagging")
         tier_sums[tier]   += score * w
         tier_totals[tier] += w
@@ -1178,15 +1403,22 @@ def weighted_signal(data):
 
 METRICS = [
     ("unemployment_rate", "Unemployment Rate",         "Job Market",          '#,##0.0"%"',        ">6.5% Weak  |  4-6.5% Moderate  |  <4% Strong",    C["ch_ur"],   "Rate (%)"),
-    ("initial_claims",    "Initial Jobless Claims",    "Job Market",          "#,##0",              ">350k Weak  |  250-350k Moderate  |  <250k Strong",  C["ch_ic"],   "Claims"),
+    ("initial_claims",    "Initial Jobless Claims (k)", "Job Market",          "#,##0.0",            ">350k Weak  |  250-350k Moderate  |  <250k Strong",  C["ch_ic"],   "Thousands"),
     ("nonfarm_payrolls",  "Nonfarm Payrolls (MoM k)",  "Job Market",          '+#,##0.0;-#,##0.0', "<50k Weak  |  50-250k Moderate  |  >250k Strong",   C["ch_nfp"],  "Thousands"),
+    ("adp",               "ADP Employment (MoM k)",    "Job Market",          '+#,##0.0;-#,##0.0', "<50k Weak  |  50-200k Moderate  |  >200k Strong",   C["ch_adp"],  "Thousands"),
+    ("ahe_yoy",           "Avg Hourly Earnings (YoY %)", "Job Market",        '#,##0.00"%"',        ">4% Overheating  |  2-4% Healthy  |  <2% Slack",   C["ch_ahe"],  "YoY (%)"),
     ("cpi_yoy",           "CPI (YoY %)",               "Inflation",           '#,##0.00"%"',        ">2.5% Elevated  |  1.5-2.5% On Target  |  <1.5% Low", C["ch_cpi"],  "YoY (%)"),
     ("core_cpi_yoy",      "Core CPI (YoY %)",          "Inflation",           '#,##0.00"%"',        ">2.5% Elevated  |  1.8-2.5% On Target  |  <1.8% Low", C["ch_ccpi"], "YoY (%)"),
+    ("core_pce_yoy",     "Core PCE (YoY %)",          "Inflation",           '#,##0.00"%"',        ">2.5% Above Target  |  1.8-2.5% On Target  |  <1.8% Low", C["ch_pce"], "YoY (%)"),
+    ("import_yoy",       "Import Price Index (YoY %)", "Inflation",          '+#,##0.0"%";-#,##0.0"%"', ">5% Elevated  |  -5 to 5% Normal  |  <-5% Falling",  C["ch_imp"], "YoY (%)"),
     ("ppi_mom",           "PPI - All Commodities (MoM %)", "Inflation",       '#,##0.00"%"',        ">0.5% Elevated  |  0-0.5% Moderate  |  <0% Falling",  C["ch_ppi"],  "MoM (%)"),
     ("crb_yoy",           "CRB Commodity Index (YoY %)", "Inflation",          '#,##0.00"%"',        ">10% Elevated  |  -10% to 10% Normal  |  <-10% Falling", C["ch_crb"],  "YoY (%)"),
     ("ism_mfg",           "ISM Manufacturing PMI",     "Economic Activities", "#,##0.0",            ">56 Strong  |  50-56 Moderate  |  <50 Contraction", C["ch_imfg"], "Index"),
     ("ism_svc",           "ISM Non-Manufacturing PMI", "Economic Activities", "#,##0.0",            ">56 Strong  |  50-56 Moderate  |  <50 Contraction", C["ch_isvc"], "Index"),
+    ("spg_svc",           "S&P US Global Services PMI",   "Economic Activities", "#,##0.0",            ">56 Strong  |  50-56 Moderate  |  <50 Contraction", C["ch_spg"],  "Index"),
     ("chicago_pmi",       "Chicago PMI  (Regional)",   "Economic Activities", "#,##0.0",            ">56 Strong  |  50-56 Moderate  |  <50 Contraction", C["ch_chi"],  "Index"),
+    ("indpro_mom",       "Industrial Production (MoM %)", "Economic Activities", '+#,##0.00"%"',    ">0.3% Expanding  |  Flat  |  <-0.2% Contracting",  C["ch_ip"],  "MoM (%)"),
+    ("retail_mom",       "Retail Sales (MoM %)",      "Economic Activities", '+#,##0.00"%"',       ">0.5% Strong  |  Normal  |  <-0.3% Weak",          C["ch_ret"], "MoM (%)"),
     ("consumer_conf",     "Consumer Sentiment (UoM)",  "Economic Activities", "#,##0.0",            ">90 High  |  65-90 Moderate  |  <65 Low",           C["ch_cc"],   "Index"),
     # Leading Indicators
     ("hy_spread",         "HY Credit Spread (OAS %)",  "Leading Indicators",  '#,##0.00"%"',        ">5.0% Stress  |  3.5-5.0% Normal  |  <3.5% Tight",  C["ch_hy"],   "OAS (%)"),
@@ -1197,20 +1429,24 @@ METRICS = [
     ("jolts_quits",       "JOLTS Quits Rate (%)",      "Leading Indicators",  '#,##0.0"%"',          "<2.0% Low  |  2.0-2.5% Normal  |  >2.5% High",     C["ch_jq"],   "Rate (%)"),
     ("breakeven_10y",     "10Y Breakeven Inflation",   "Leading Indicators",  '#,##0.00"%"',         "<1.8% Deflationary  |  1.8-2.5% Anchored  |  >2.5% Elevated", C["ch_be"], "Rate (%)"),
     ("cfnai",             "Chicago Fed Natl Activity",  "Leading Indicators",  '+#,##0.00;-#,##0.00', "<-0.7 Recession  |  -0.7 to 0.2 Trend  |  >0.2 Above Trend", C["ch_cfnai"], "Index"),
-    ("epu",               "Policy Uncertainty (EPU)",   "Leading Indicators",  "#,##0.0",             ">200 Extreme  |  130-200 Elevated  |  <80 Low",                C["ch_epu"],   "Index"),
+    ("epu",               "Policy Uncertainty (EPU)",   "Leading Indicators",  "#,##0.0",             ">300 Extreme  |  200-300 Elevated  |  <120 Low",                C["ch_epu"],   "Index"),
+    ("dxy",               "Trade-Weighted Dollar",      "Leading Indicators",  "#,##0.0",             ">120 Strong (con)  |  100-120 Normal  |  <100 Weak (exp)",      C["ch_dxy"],   "Index"),
+    ("housing_starts",    "Housing Starts (YoY %)",     "Leading Indicators", '+#,##0.0"%";-#,##0.0"%"', "<-15% Falling  |  Normal  |  >10% Rising",                 C["ch_hs"],    "YoY (%)"),
 ]
 METRIC_INFO = {m[0]: m for m in METRICS}
 UNIT_MAP = {
-    "unemployment_rate": "%",       "initial_claims":  "Claims",  "nonfarm_payrolls": "k MoM",
-    "cpi_yoy":           "% YoY",   "core_cpi_yoy":    "% YoY",  "ppi_mom":           "% MoM",
+    "unemployment_rate": "%",       "initial_claims":  "k Claims",  "nonfarm_payrolls": "k MoM",  "adp": "k MoM",  "ahe_yoy": "% YoY",
+    "cpi_yoy":           "% YoY",   "core_cpi_yoy":    "% YoY",  "core_pce_yoy":      "% YoY",  "import_yoy": "% YoY",  "ppi_mom": "% MoM",
     "crb_yoy":           "% YoY",
-    "ism_mfg":           "Index",   "ism_svc":         "Index",   "chicago_pmi":       "Index",
+    "ism_mfg":           "Index",   "ism_svc":         "Index",   "spg_svc":           "Index",  "chicago_pmi": "Index",
+    "indpro_mom":        "% MoM",   "retail_mom":      "% MoM",
     "consumer_conf":     "Index",
     # Leading indicators
     "hy_spread":         "% OAS",   "ig_spread":       "% OAS",      "t10y3m":            "% Spread",
     "building_permits":  "% YoY",   "jolts_openings":  "% YoY",   "jolts_quits":       "%",
     "breakeven_10y":     "%",       "cfnai":           "Index",
     "epu":               "Index",
+    "dxy":               "Index",   "housing_starts":  "% YoY",
 }
 
 
@@ -1222,12 +1458,19 @@ RELEASE_SCHEDULE = {
     "ism_mfg":           {"name": "ISM Manufacturing PMI",       "rule": "first_bday",     "source": "PDF",  "priority": "HIGH"},
     "ism_svc":           {"name": "ISM Services PMI",            "rule": "third_bday",     "source": "PDF",  "priority": "HIGH"},
     "chicago_pmi":       {"name": "Chicago PMI (MNI)",           "rule": "last_bday",      "source": "PDF",  "priority": "HIGH"},
+    "adp":               {"name": "ADP Employment Change",       "rule": "first_wednesday","source": "FRED", "priority": "MEDIUM"},
     "unemployment_rate": {"name": "Unemployment Rate (BLS)",     "rule": "first_friday",   "source": "FRED", "priority": "MEDIUM"},
     "nonfarm_payrolls":  {"name": "Nonfarm Payrolls (BLS)",      "rule": "first_friday",   "source": "FRED", "priority": "MEDIUM"},
+    "ahe_yoy":           {"name": "Avg Hourly Earnings (BLS)",   "rule": "first_friday",   "source": "FRED", "priority": "MEDIUM"},
     "cpi_yoy":           {"name": "CPI (BLS)",                   "rule": "mid_month",      "source": "FRED", "priority": "MEDIUM"},
     "core_cpi_yoy":      {"name": "Core CPI (BLS)",              "rule": "mid_month",      "source": "FRED", "priority": "MEDIUM"},
     "ppi_mom":           {"name": "PPI (BLS)",                   "rule": "mid_month",      "source": "FRED", "priority": "MEDIUM"},
     "initial_claims":    {"name": "Initial Jobless Claims",      "rule": "every_thursday",  "source": "FRED", "priority": "LOW"},
+    "spg_svc":           {"name": "S&P US Global Services PMI",     "rule": "late_month",     "source": "PDF",  "priority": "HIGH"},
+    "core_pce_yoy":      {"name": "Core PCE (BEA)",              "rule": "late_month",     "source": "FRED", "priority": "MEDIUM"},
+    "import_yoy":        {"name": "Import Price Index (BLS)",    "rule": "mid_month",      "source": "FRED", "priority": "LOW"},
+    "indpro_mom":        {"name": "Industrial Production (Fed)", "rule": "mid_month",      "source": "FRED", "priority": "MEDIUM"},
+    "retail_mom":        {"name": "Retail Sales (Census)",       "rule": "mid_month",      "source": "FRED", "priority": "MEDIUM"},
     "consumer_conf":     {"name": "UMich Consumer Sentiment",    "rule": "late_month",     "source": "FRED", "priority": "LOW"},
     "hy_spread":         {"name": "HY Credit Spread (OAS)",      "rule": "daily",          "source": "FRED", "priority": "LOW"},
     "ig_spread":         {"name": "IG Credit Spread (OAS)",      "rule": "daily",          "source": "FRED", "priority": "LOW"},
@@ -1239,6 +1482,8 @@ RELEASE_SCHEDULE = {
     "cfnai":             {"name": "CFNAI",                       "rule": "late_month",     "source": "FRED", "priority": "LOW"},
     "epu":               {"name": "Policy Uncertainty (EPU)",    "rule": "daily",          "source": "FRED", "priority": "LOW"},
     "crb_yoy":           {"name": "CRB Commodity Index",         "rule": "mid_month",      "source": "FRED", "priority": "LOW"},
+    "dxy":               {"name": "Trade-Weighted Dollar",      "rule": "daily",          "source": "FRED", "priority": "LOW"},
+    "housing_starts":    {"name": "Housing Starts",             "rule": "mid_month",      "source": "FRED", "priority": "LOW"},
 }
 
 PRIORITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
@@ -1290,6 +1535,9 @@ def _next_release_date(rule, ref=None):
     elif rule == "last_bday":
         d = _last_bday(yr, mo)
         return d if d > today else _last_bday(nxt_yr if mo == 12 else yr, nxt_mo)
+    elif rule == "first_wednesday":
+        d = _nth_weekday(nxt_yr if mo == 12 else yr, nxt_mo, 2, 1)
+        return d if d > today else _nth_weekday(nxt_yr + (1 if nxt_mo == 12 else 0), nxt_mo + 1 if nxt_mo < 12 else 1, 2, 1)
     elif rule == "first_friday":
         d = _nth_weekday(nxt_yr if mo == 12 else yr, nxt_mo, 4, 1)
         return d if d > today else _nth_weekday(nxt_yr + (1 if nxt_mo == 12 else 0), nxt_mo + 1 if nxt_mo < 12 else 1, 4, 1)
@@ -1409,7 +1657,7 @@ def classify_regime(data, dfm_factors=None):
         inflation_up = dfm_factors["inflation"] > 0
     else:
         growth_keys = ["unemployment_rate", "initial_claims", "nonfarm_payrolls",
-                       "ism_mfg", "ism_svc", "consumer_conf"]
+                       "adp", "ism_mfg", "ism_svc", "consumer_conf"]
         growth_votes = []
         for key in growth_keys:
             val = data.get(key, (None, []))[0]
@@ -1553,18 +1801,26 @@ def fetch_positioning():
 def fetch_all():
     print("  Fetching FRED series...")
     ism = read_manual_input()
+    _spg_csv = _read_pmi_csv(CSV_SPG_SVC)
     print("  Fetching leading indicators (credit spreads, yield curve, JOLTS, permits, CFNAI)...")
     d = {
         "unemployment_rate": fetch_latest("UNRATE"),
-        "initial_claims":    fetch_latest("IC4WSA"),
+        "initial_claims":    _scale_series(fetch_latest("IC4WSA"), 0.001),  # persons -> thousands
         "nonfarm_payrolls":  fetch_payrolls(),
+        "adp":               fetch_adp(),
+        "ahe_yoy":           fetch_yoy("CES0500000003"),
         "cpi_yoy":           fetch_yoy("CPIAUCSL"),
+        "import_yoy":        fetch_yoy("IR"),
         "core_cpi_yoy":      fetch_yoy("CPILFESL"),
+        "core_pce_yoy":      fetch_yoy("PCEPILFE"),
         "ppi_mom":           fetch_mom_pct("PPIACO"),
         "crb_yoy":           fetch_yoy("PALLFNFINDEXM"),   # IMF Global All-Commodity Price Index - CRB proxy
         "ism_mfg":           ism["ism_mfg"],
         "ism_svc":           ism["ism_svc"],
+        "spg_svc":           (_spg_csv[0][1] if _spg_csv else None, _spg_csv[:12]),
         "chicago_pmi":       ism["chicago_pmi"],
+        "indpro_mom":        fetch_mom_pct("INDPRO"),
+        "retail_mom":        fetch_mom_pct("RSAFS"),
         "consumer_conf":     fetch_latest("UMCSENT"),
         # Leading indicators
         "hy_spread":         fetch_daily_latest("BAMLH0A0HYM2", 400),
@@ -1576,6 +1832,8 @@ def fetch_all():
         "breakeven_10y":     fetch_daily_latest("T10YIE", 400),
         "cfnai":             fetch_latest("CFNAI"),
         "epu":               fetch_daily_latest("USEPUINDXD", 400),
+        "dxy":               fetch_daily_latest("DTWEXBGS", 400),
+        "housing_starts":    fetch_level_yoy("HOUST"),
     }
     return d
 
@@ -1638,6 +1896,14 @@ def _payrolls_extended(limit=75):
             for i in range(min(limit - 1, len(raw) - 1))]
     return hist[0][1] if hist else None, hist
 
+def _adp_extended(limit=280):
+    """ADP private payrolls MoM change (thousands) - extended history for DFM. ADPMNUSNERSA is in persons, so /1000."""
+    raw = _fred("ADPMNUSNERSA", limit)
+    if len(raw) < 2: return None, []
+    hist = [(raw[i][0], round((raw[i][1] - raw[i+1][1]) / 1000, 1))
+            for i in range(min(limit - 1, len(raw) - 1))]
+    return hist[0][1] if hist else None, hist
+
 
 def fetch_dfm_history():
     """
@@ -1655,6 +1921,7 @@ def fetch_dfm_history():
     _mfg_csv = _read_pmi_csv(CSV_ISM_MFG)
     _svc_csv = _read_pmi_csv(CSV_ISM_SVC)
     _chi_csv = _read_pmi_csv(CSV_CHICAGO)
+    _spg_csv = _read_pmi_csv(CSV_SPG_SVC)
 
     cfnai_raw   = _fred("CFNAI", 140)
     permit_yoy  = _yoy_extended("PERMIT", 160)
@@ -1662,6 +1929,10 @@ def fetch_dfm_history():
     be_daily    = _fred("T10YIE", 3000)
     be_monthly  = _daily_to_monthly_mean(be_daily) if be_daily else []
     m2_yoy      = _yoy_extended("M2SL", 160)
+    pce_yoy     = _yoy_extended("PCEPILFE", 160)
+    import_yoy  = _yoy_extended("IR", 160)
+    indpro_mom  = _mom_extended("INDPRO", 140)
+    housing_yoy = _yoy_extended("HOUST", 160)
     hy_daily    = _fred("BAMLH0A0HYM2", 3000)
     hy_monthly  = _daily_to_monthly_mean(hy_daily) if hy_daily else []
     ig_daily    = _fred("BAMLC0A0CM", 3000)
@@ -1675,14 +1946,20 @@ def fetch_dfm_history():
         "unrate":        (unrate_raw[0][1] if unrate_raw else None,  unrate_raw),
         "ic4wsa_m":      (ic_monthly[0][1] if ic_monthly else None,  ic_monthly),
         "payems_m":      _payrolls_extended(140),
+        "adp_m":         _adp_extended(140),
         "umcsent":       (umcsent_raw[0][1] if umcsent_raw else None, umcsent_raw),
         "cpi_yoy":       _yoy_extended("CPIAUCSL", 160),
         "core_yoy":      _yoy_extended("CPILFESL", 160),
         "ppi_mom":       _mom_extended("PPIACO", 140),
         "crb_yoy":       _yoy_extended("PALLFNFINDEXM", 160),
+        "pce_yoy":       pce_yoy,
+        "import_yoy":    import_yoy,
+        "indpro_mom":    indpro_mom,
+        "housing_yoy":   housing_yoy,
         "ism_mfg_csv":   (_mfg_csv[0][1] if _mfg_csv else None, _mfg_csv),
         "ism_svc_csv":   (_svc_csv[0][1] if _svc_csv else None, _svc_csv),
         "chicago_pmi_csv": (_chi_csv[0][1] if _chi_csv else None, _chi_csv),
+        "spg_svc_csv":   (_spg_csv[0][1] if _spg_csv else None, _spg_csv),
         "cfnai":         (cfnai_raw[0][1] if cfnai_raw else None, cfnai_raw),
         "permit_yoy":    permit_yoy,
         "jolts":         (jolts_raw[0][1] if jolts_raw else None, jolts_raw),
@@ -1697,40 +1974,46 @@ def fetch_dfm_history():
 
 def fetch_hmm_history():
     """
-    Fetch LONG history (250+ months, FRED-only, NO ISM CSVs) for HMM training.
-    This gives the HMM enough regime diversity to learn all 4 states:
-    includes 2008 recession, 2010s expansion, COVID crash, inflation spike.
+    Fetch LONG history (400+ months, FRED-only, NO ISM CSVs) for HMM training.
+    Extended back to ~1993 for maximum regime diversity: 1990s expansion,
+    dot-com bust, 2008 GFC, 2010s recovery, COVID crash, 2022 inflation spike.
     """
-    print("  Fetching long history for HMM training (250+ months, FRED-only)...")
+    print("  Fetching long history for HMM training (580+ months, FRED + Reuters)...")
 
-    # Monthly series - fetch 280 obs to get ~23 years back to ~2003
-    unrate_raw  = _fred("UNRATE", 280)
-    umcsent_raw = _fred("UMCSENT", 280)
-    cfnai_raw   = _fred("CFNAI", 280)
-    jolts_raw   = _fred("JTSJOL", 280)
+    # Monthly series - fetch 620 obs to get ~50 years back to ~1976
+    unrate_raw  = _fred("UNRATE", 620)
+    umcsent_raw = _fred("UMCSENT", 620)
+    cfnai_raw   = _fred("CFNAI", 620)
+    jolts_raw   = _fred("JTSJOL", 620)
 
-    ic_weekly = _fred("IC4WSA", 1500)
+    ic_weekly = _fred("IC4WSA", 3500)
     ic_monthly = _weekly_to_monthly_mean(ic_weekly)
 
     # YoY and MoM series - fetch extra for the 12-month lookback
-    payems_h = _payrolls_extended(280)
-    permit_h = _yoy_extended("PERMIT", 300)
-    cpi_h    = _yoy_extended("CPIAUCSL", 300)
-    core_h   = _yoy_extended("CPILFESL", 300)
-    ppi_h    = _mom_extended("PPIACO", 280)
-    crb_h    = _yoy_extended("PALLFNFINDEXM", 300)
-    m2_h     = _yoy_extended("M2SL", 300)
+    payems_h = _payrolls_extended(620)
+    permit_h = _yoy_extended("PERMIT", 640)
+    cpi_h    = _yoy_extended("CPIAUCSL", 640)
+    core_h   = _yoy_extended("CPILFESL", 640)
+    ppi_h    = _mom_extended("PPIACO", 620)
+    crb_h    = _yoy_extended("PALLFNFINDEXM", 640)
+    m2_h     = _yoy_extended("M2SL", 640)
+    pce_h    = _yoy_extended("PCEPILFE", 640)
+    indpro_h = _mom_extended("INDPRO", 620)
+    housing_h = _yoy_extended("HOUST", 640)
 
-    # Daily series - fetch 6000+ trading days for ~24 years
-    be_daily  = _fred("T10YIE", 6000)
+    # Reuters Commodities Index (daily CSV -> monthly YoY %)
+    reuters_crb = _read_reuters_commodity()
+
+    # Daily series - fetch 8500+ trading days for ~34 years
+    be_daily  = _fred("T10YIE", 8500)
     be_monthly = _daily_to_monthly_mean(be_daily) if be_daily else []
-    hy_daily  = _fred("BAMLH0A0HYM2", 6000)
+    hy_daily  = _fred("BAMLH0A0HYM2", 8500)
     hy_monthly = _daily_to_monthly_mean(hy_daily) if hy_daily else []
-    ig_daily  = _fred("BAMLC0A0CM", 6000)
+    ig_daily  = _fred("BAMLC0A0CM", 8500)
     ig_monthly = _daily_to_monthly_mean(ig_daily) if ig_daily else []
-    nfci_weekly = _fred("NFCI", 1500)
+    nfci_weekly = _fred("NFCI", 2500)
     nfci_monthly = _weekly_to_monthly_mean(nfci_weekly)
-    t3m_daily = _fred("T10Y3M", 6000)
+    t3m_daily = _fred("T10Y3M", 8500)
     t3m_monthly = _daily_to_monthly_mean(t3m_daily) if t3m_daily else []
 
     return {
@@ -1742,6 +2025,8 @@ def fetch_hmm_history():
         "cfnai":    (cfnai_raw[0][1] if cfnai_raw else None, cfnai_raw),
         "permits":  permit_h,
         "jolts":    (jolts_raw[0][1] if jolts_raw else None, jolts_raw),
+        "indpro_m": indpro_h,
+        "housing_yoy": housing_h,
         # Inflation panel
         "cpi_yoy":  cpi_h,
         "core_yoy": core_h,
@@ -1749,6 +2034,8 @@ def fetch_hmm_history():
         "crb_yoy":  crb_h,
         "breakeven":(be_monthly[0][1] if be_monthly else None, be_monthly),
         "m2_yoy":   m2_h,
+        "pce_yoy":  pce_h,
+        "reuters_crb_yoy": (reuters_crb[0][1] if reuters_crb else None, reuters_crb),
         # Credit panel
         "hy_oas":   (hy_monthly[0][1] if hy_monthly else None, hy_monthly),
         "ig_oas":   (ig_monthly[0][1] if ig_monthly else None, ig_monthly),
@@ -1783,19 +2070,33 @@ def _build_aligned_panel(series_list, n=120):
     return df
 
 
-def _estimate_dfm(panel_df, anchor_col, factor_name):
+def _estimate_dfm(panel_df, anchor_col, factor_name, rolling_zscore=0):
     """
     Estimate a single latent factor from panel_df via Kalman filter (DFM) or PCA fallback.
     anchor_col: column name used for sign-normalisation (factor positively correlated with this).
+    rolling_zscore: if >0, z-score each series against a trailing window of this many months
+                    (instead of the full sample). Useful for long panels where the unconditional
+                    mean shifts across eras (e.g., 1970s inflation vs 2020s).
     Returns dict with latest score, momentum, loadings, var_explained, top_contrib, method.
     Returns None on failure.
     """
     if panel_df is None or len(panel_df) < 36:
         return None
     try:
-        means = panel_df.mean()
-        stds  = panel_df.std().replace(0, 1)
-        Z     = (panel_df - means) / stds
+        if rolling_zscore > 0:
+            # Rolling z-score: each month normalised against trailing window
+            Z = panel_df.copy()
+            for col in Z.columns:
+                rm = Z[col].rolling(window=rolling_zscore, min_periods=36).mean()
+                rs = Z[col].rolling(window=rolling_zscore, min_periods=36).std().replace(0, 1)
+                Z[col] = (Z[col] - rm) / rs
+            Z = Z.dropna()  # drop burn-in rows
+            if len(Z) < 36:
+                return None
+        else:
+            means = panel_df.mean()
+            stds  = panel_df.std().replace(0, 1)
+            Z     = (panel_df - means) / stds
 
         method     = "PCA"
         factor_raw = None
@@ -1982,9 +2283,9 @@ class _GaussianHMM:
         T, K = B.shape
         alpha = np.zeros((T, K))
         alpha[0] = self.pi * B[0]
-        alpha[0] /= max(alpha[0].sum(), 1e-300)
         scale = np.zeros(T)
-        scale[0] = alpha[0].sum()
+        scale[0] = max(alpha[0].sum(), 1e-300)
+        alpha[0] /= scale[0]
         for t in range(1, T):
             alpha[t] = (alpha[t-1] @ self.A) * B[t]
             s = alpha[t].sum()
@@ -2004,10 +2305,15 @@ class _GaussianHMM:
     def fit(self, X):
         self._init_params(X)
         T = len(X)
-        for _ in range(self.n_iter):
+        prev_ll = -np.inf
+        for iteration in range(self.n_iter):
             B = self._emission_probs(X)
             alpha, scale = self._forward(B)
             beta = self._backward(B, scale)
+            ll = np.sum(np.log(np.maximum(scale, 1e-300)))
+            if abs(ll - prev_ll) < 1e-4:
+                break
+            prev_ll = ll
 
             # Posterior state probabilities
             gamma = alpha * beta
@@ -2027,6 +2333,9 @@ class _GaussianHMM:
             for k in range(self.K):
                 row_sum = max(xi[k].sum(), 1e-300)
                 self.A[k] = xi[k] / row_sum
+            # Floor transition probs at 1% so no state becomes absorbing
+            self.A = np.maximum(self.A, 0.01)
+            self.A /= self.A.sum(axis=1, keepdims=True)
 
             for k in range(self.K):
                 w = gamma[:, k]
@@ -2034,11 +2343,12 @@ class _GaussianHMM:
                 self.means[k] = (w[:, None] * X).sum(axis=0) / w_sum
                 diff = X - self.means[k]
                 self.covs[k] = (diff.T @ (diff * w[:, None])) / w_sum
-                self.covs[k] += np.eye(self.D) * 1e-4  # regularise
+                self.covs[k] += np.eye(self.D) * 0.01  # regularise (prevent spike collapse)
 
         return self
 
     def predict_proba(self, X):
+        """Smoothed probabilities (forward-backward). Uses all data including future."""
         B = self._emission_probs(X)
         alpha, scale = self._forward(B)
         beta = self._backward(B, scale)
@@ -2047,6 +2357,12 @@ class _GaussianHMM:
         g_sum = np.maximum(g_sum, 1e-300)
         gamma /= g_sum
         return gamma
+
+    def predict_filtered(self, X):
+        """Filtered probabilities (forward-only). No look-ahead bias."""
+        B = self._emission_probs(X)
+        alpha, _ = self._forward(B)
+        return alpha
 
     def score(self, X):
         B = self._emission_probs(X)
@@ -2097,6 +2413,7 @@ def estimate_hmm_regime(growth_series, inflation_series, n_states=4):
             return None
 
         probs = best_model.predict_proba(X)
+        filtered_probs = best_model.predict_filtered(X)
         current_probs = probs[-1]  # latest observation
 
         # After EM, verify state means still map to the correct quadrants.
@@ -2167,13 +2484,37 @@ def estimate_hmm_regime(growth_series, inflation_series, n_states=4):
         if transition_risk:
             print(f"    !!  TRANSITION RISK -- second regime > 30%")
 
+        # Build full regime history (all months, for timeline chart)
+        # Build smoothed history (forward-backward, for regime timeline chart)
+        regime_history = {"dates": [], "Early Recovery": [], "Reflation": [], "Stagflation": [], "Deflation": []}
+        # Build filtered history (forward-only, no look-ahead bias, for backtest)
+        regime_history_filtered = {"dates": [], "Early Recovery": [], "Reflation": [], "Stagflation": [], "Deflation": []}
+        for t_idx, date in enumerate(shared):
+            ym = date[:7]
+            regime_history["dates"].append(ym)
+            regime_history_filtered["dates"].append(ym)
+            for hist_dict, prob_matrix in [(regime_history, probs), (regime_history_filtered, filtered_probs)]:
+                month_probs = {r: 0.0 for r in REGIME_NAMES_HMM}
+                for si, p in enumerate(prob_matrix[t_idx]):
+                    month_probs[final_labels.get(si, "Deflation")] += p
+                for r in REGIME_NAMES_HMM:
+                    hist_dict[r].append(round(month_probs[r] * 100, 1))
+
+        # Regime stability (Shannon entropy of probability distribution)
+        import math
+        entropy = -sum(p * math.log2(max(p, 1e-10)) for p in regime_probs.values())
+        stability = round(1 - entropy / 2.0, 3)  # 1 = certain, 0 = uniform
+
         return {
             "regime":          primary,
             "confidence":      confidence,
             "probabilities":   regime_probs,
             "transition_risk": transition_risk,
+            "stability":       stability,
             "transition":      best_model.A,
             "state_desc":      state_descriptions,
+            "regime_history":  regime_history,
+            "regime_history_filtered": regime_history_filtered,
         }
     except Exception as e:
         print(f"  [WARN] HMM estimation failed: {e}")
@@ -2286,7 +2627,7 @@ def compute_sahm_rule(unrate_hist):
 # Uses the long-history DFM factors to classify historical regimes,
 # then computes forward S&P 500 returns by regime as validation.
 
-def backtest_regimes(growth_series, inflation_series):
+def backtest_regimes(growth_series, inflation_series, hmm_result=None):
     """
     Backtest regime classification against equity market forward returns.
     Returns dict: {regime: {"months": N, "avg_6m": X, "avg_12m": Y}} or None.
@@ -2295,7 +2636,7 @@ def backtest_regimes(growth_series, inflation_series):
         return None
     try:
         # Fetch SP500 monthly data
-        sp_raw = _fred("NASDAQCOM", 5000)   # NASDAQ Composite daily - back to ~2007
+        sp_raw = _fred("SPASTT01USM661N", 500)  # S&P 500 OECD monthly index
         if len(sp_raw) < 24:
             print("  [WARN] Insufficient SP500 data for backtest")
             return None
@@ -2309,15 +2650,27 @@ def backtest_regimes(growth_series, inflation_series):
             print(f"  [WARN] Only {len(shared)} aligned months for backtest - need >=24")
             return None
 
+        # Build HMM filtered regime lookup if available
+        hmm_regime_lookup = {}
+        if hmm_result and hmm_result.get("regime_history_filtered"):
+            rh = hmm_result["regime_history_filtered"]
+            for idx, ym in enumerate(rh["dates"]):
+                probs = {r: rh[r][idx] for r in REGIME_NAMES_HMM}
+                hmm_regime_lookup[ym] = max(probs, key=probs.get)
+
         # Classify regime for each month
         regime_returns = {r: {"fwd_6m": [], "fwd_12m": []} for r in REGIME_NAMES_HMM}
         for i, ym in enumerate(shared):
-            g = growth_series.loc[ym]
-            inf = inflation_series.loc[ym]
-            if   g > 0 and inf <= 0: regime = "Early Recovery"
-            elif g > 0 and inf >  0: regime = "Reflation"
-            elif g <= 0 and inf > 0: regime = "Stagflation"
-            else:                    regime = "Deflation"
+            # Use HMM filtered classification if available, else fall back to sign-based
+            if ym in hmm_regime_lookup:
+                regime = hmm_regime_lookup[ym]
+            else:
+                g = growth_series.loc[ym]
+                inf = inflation_series.loc[ym]
+                if   g > 0 and inf <= 0: regime = "Early Recovery"
+                elif g > 0 and inf >  0: regime = "Reflation"
+                elif g <= 0 and inf > 0: regime = "Stagflation"
+                else:                    regime = "Deflation"
 
             sp_now = sp_by_ym.get(ym)
             if sp_now is None or sp_now == 0:
@@ -2577,7 +2930,7 @@ def _build_dashboard_inner(wb, data, ff_hist, ch_ws, pos_data=None, dfm_results=
          "Overfits to GFC/COVID; may misclassify novel regimes. Trust when >80%.",
          "Primary. >80% = act on regime. <60% = treat as TRANSITION."),
         ("2", "Weighted Macro Score", score_reading, "HIGH",
-         "20 indicators weighted by timing: leading 2-3x, coincident 1.5-2x, lagging 1x.",
+         "29 indicators weighted by timing: leading 2-3x, coincident 1.5-2x, lagging 1x.",
          "Leading indicators dominate; can front-run false signals.",
          "Best single number. >+0.3 = bullish. <-0.3 = bearish."),
         ("3", "DFM Factor Model", dfm_reading, "MEDIUM",
@@ -3245,7 +3598,7 @@ def build_notes(wb):
              "is weighted by its predictive timing: Leading indicators (credit spreads, yield "
              "curve, building permits, JOLTS, CFNAI, breakevens) get 2-3x weight.  Coincident "
              "indicators (ISM, claims, payrolls) get 1.5-2x.  Lagging indicators (unemployment, "
-             "CPI, PPI, consumer sentiment) get 1x.  Output: normalized score from −1.0 to +1.0 "
+             "CPI, PPI, consumer sentiment) get 1x.  Output: normalised score from −1.0 to +1.0 "
              "with breakdown by tier.  The unweighted vote is preserved as a secondary reference."),
             ("Sahm Rule  (regime sub-indicators)",
              "Federal Reserve recession indicator developed by Claudia Sahm.  "
@@ -3332,7 +3685,7 @@ def build_notes(wb):
              "MEDIUM = half tilt (regime clear but outlook mixed).  "
              "LOW = minimal tilt (regime uncertain).  TRANSITION = reduce risk, raise cash."),
             ("Backtest (12M Forward)",
-             "Historical validation using NASDAQ Composite (FRED: NASDAQCOM).  For each month in the "
+             "Historical validation using S&amp;P 500 (FRED: SPASTT01USM661N).  For each month in the "
              "DFM factor history, the regime is classified and the 12-month forward equity return is computed.  "
              "Results are averaged by regime.  Small sample sizes -- treat as directional guidance, not forecasts."),
             ("Positioning (RISK-ON / RISK-OFF)",
@@ -3399,26 +3752,81 @@ def check_alerts(old, new_regime, new_confidence, new_score, new_forecast):
     prev_forecast = old.get("forecast")
 
     if prev_regime and prev_regime != new_regime:
-        alerts.append(f"REGIME CHANGE: {prev_regime} -> {new_regime} ({new_confidence*100:.0f}% confidence)")
+        msg = f"REGIME CHANGE: {prev_regime} -> {new_regime} ({new_confidence*100:.0f}% confidence)"
+        alerts.append(msg)
+        log_alert("regime_change", msg)
+        send_email_alert("Regime Change", msg)
 
     if prev_score is not None and abs(new_score - prev_score) > 0.15:
         direction = "improved" if new_score > prev_score else "deteriorated"
-        alerts.append(f"MACRO SCORE {direction}: {prev_score:+.2f} -> {new_score:+.2f}")
+        msg = f"MACRO SCORE {direction}: {prev_score:+.2f} -> {new_score:+.2f}"
+        alerts.append(msg)
+        log_alert("score_shift", msg)
+        send_email_alert("Score Shift", msg)
 
     if prev_forecast and prev_forecast != new_forecast:
-        alerts.append(f"OUTLOOK CHANGE: {prev_forecast} -> {new_forecast}")
+        msg = f"OUTLOOK CHANGE: {prev_forecast} -> {new_forecast}"
+        alerts.append(msg)
+        log_alert("outlook_change", msg)
+        send_email_alert("Outlook Change", msg)
 
     return alerts
 
 
+ALERT_LOG = os.path.join(DATA_DIR, "alert_log.json")
+
+def log_alert(alert_type, message, details=None):
+    """Append alert to persistent JSON log (kept on disk for dashboard)."""
+    entry = {"timestamp": datetime.now().isoformat(), "type": alert_type, "message": message}
+    if details:
+        entry["details"] = details
+    log = []
+    if os.path.isfile(ALERT_LOG):
+        try:
+            with open(ALERT_LOG, encoding="utf-8") as f:
+                log = json.load(f)
+        except Exception:
+            pass
+    log.insert(0, entry)
+    log = log[:50]  # keep last 50
+    try:
+        with open(ALERT_LOG, "w", encoding="utf-8") as f:
+            json.dump(log, f, indent=2)
+    except Exception:
+        pass
+
+def send_email_alert(subject, body):
+    """Send alert via Outlook SMTP. Silently skips if not configured."""
+    sender = os.environ.get("ALERT_EMAIL_FROM")
+    password = os.environ.get("ALERT_EMAIL_PASSWORD")
+    recipient = os.environ.get("ALERT_EMAIL_TO")
+    if not all([sender, password, recipient]):
+        return
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        msg = MIMEText(body)
+        msg["Subject"] = f"[US Econ Tracker] {subject}"
+        msg["From"] = sender
+        msg["To"] = recipient
+        with smtplib.SMTP("smtp-mail.outlook.com", 587) as s:
+            s.starttls()
+            s.login(sender, password)
+            s.send_message(msg)
+        print(f"  [EMAIL] Alert sent to {recipient}")
+    except Exception as e:
+        print(f"  [WARN] Email alert failed: {e}")
+
 def send_notification(title, message):
-    """Try Windows toast notification, fall back to console."""
+    """Try Windows toast + email, fall back to console."""
     print(f"\n  *** ALERT: {message} ***")
+    log_alert("notification", message)
+    send_email_alert(title, message)
     try:
         from plyer import notification
         notification.notify(title=title, message=message, timeout=15)
     except Exception:
-        pass  # plyer not installed - console alert is sufficient
+        pass
 
 
 # ── CONVICTION SIGNAL ─────────────────────────────────────────────────────────
@@ -3429,9 +3837,18 @@ def compute_conviction(hmm_result, forecast):
         return "UNKNOWN", C["neu"], "HMM unavailable"
 
     conf = hmm_result.get("confidence", 0)
+    regime = hmm_result.get("regime", "")
+    stability = hmm_result.get("stability", 1.0)
     f_label = forecast[0] if forecast else "MIXED"
 
-    if conf >= 0.8 and f_label in ("DETERIORATING", "WEAKENING"):
+    # Stability override: if regime probabilities are spread, force TRANSITION
+    if stability < 0.5:
+        return "TRANSITION", C["warn"], "Regime uncertain (stability {:.0f}%) - reduce all tilts, raise cash".format(stability * 100)
+
+    # Conflict check: HMM says growth-positive regime but leading indicators weakening
+    if conf >= 0.8 and f_label in ("DETERIORATING", "WEAKENING") and regime in ("Early Recovery", "Reflation"):
+        return "LOW", C["warn"], "Regime looks solid but leading indicators weakening - reduce tilt"
+    elif conf >= 0.8 and f_label in ("DETERIORATING", "WEAKENING"):
         return "HIGH", C["con"], "Full regime allocation recommended"
     elif conf >= 0.8 and f_label in ("IMPROVING", "STABILISING"):
         return "HIGH", C["exp"], "Full regime allocation recommended"
@@ -3445,6 +3862,288 @@ def compute_conviction(hmm_result, forecast):
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
+def _validate_score_params():
+    """Cross-validate SCORE_PARAMS against historical S&P 500 forward returns."""
+    import csv as csv_mod
+    print("=" * 60)
+    print("  SCORE_PARAMS Cross-Validation")
+    print("=" * 60)
+
+    # Fetch extended history for all indicators
+    print("\n  Fetching extended indicator history...")
+    dfm_hist = fetch_dfm_history()
+
+    # Fetch S&P 500 returns
+    sp_raw = _fred("SPASTT01USM661N", 400)
+    if not sp_raw or len(sp_raw) < 24:
+        print("  [ERROR] Insufficient S&P 500 data"); return
+    sp_by_ym = {d[:7]: v for d, v in sp_raw}
+    sp_months = sorted(sp_by_ym.keys())
+    # 3-month forward return for each month
+    sp_fwd3 = {}
+    for i, ym in enumerate(sp_months):
+        if i + 3 < len(sp_months):
+            fwd_ym = sp_months[i + 3]
+            sp_fwd3[ym] = (sp_by_ym[fwd_ym] - sp_by_ym[ym]) / sp_by_ym[ym] * 100
+
+    # For each FRED indicator, get 120-month history
+    print("  Fetching individual indicator histories...")
+    ind_history = {}
+    fetch_map = {
+        "unemployment_rate": ("UNRATE", "latest"), "initial_claims": ("IC4WSA", "latest"),
+        "nonfarm_payrolls": ("PAYEMS", "payrolls"), "cpi_yoy": ("CPIAUCSL", "yoy"),
+        "core_cpi_yoy": ("CPILFESL", "yoy"), "core_pce_yoy": ("PCEPILFE", "yoy"),
+        "ppi_mom": ("PPIACO", "mom"), "crb_yoy": ("PALLFNFINDEXM", "yoy"),
+        "consumer_conf": ("UMCSENT", "latest"), "cfnai": ("CFNAI", "latest"),
+    }
+    for key, (sid, ftype) in fetch_map.items():
+        if ftype == "latest":
+            raw = _fred(sid, 140)
+            if raw:
+                ind_history[key] = {d[:7]: v for d, v in raw}
+        elif ftype == "yoy":
+            _, hist = _yoy_extended(sid, 160) if True else (None, [])
+            # Use the _yoy_extended which returns (val, [(date, val),...])
+            result = _yoy_extended(sid, 160)
+            if result and result[1]:
+                ind_history[key] = {d[:7]: v for d, v in result[1]}
+        elif ftype == "mom":
+            result = _mom_extended(sid, 140)
+            if result and result[1]:
+                ind_history[key] = {d[:7]: v for d, v in result[1]}
+        elif ftype == "payrolls":
+            result = _payrolls_extended(140)
+            if result and result[1]:
+                ind_history[key] = {d[:7]: v for d, v in result[1]}
+
+    # Sweep params for each indicator
+    print(f"\n  Validating {len(ind_history)} indicators against S&P 500 3-month forward returns...\n")
+    results = []
+    for key, hist_dict in ind_history.items():
+        params = SCORE_PARAMS.get(key)
+        if not params:
+            continue
+        mid_orig = params["mid"]
+        scale_orig = params["scale"]
+
+        best_corr = -999
+        best_mid = mid_orig
+        best_scale = scale_orig
+
+        # Sweep: 5 midpoints x 5 scales = 25 combos
+        for mid_mult in [0.8, 0.9, 1.0, 1.1, 1.2]:
+            for scale_mult in [0.7, 0.85, 1.0, 1.15, 1.3]:
+                test_mid = mid_orig * mid_mult
+                test_scale = scale_orig * scale_mult
+                if test_scale <= 0:
+                    continue
+
+                scores = []
+                fwd_returns = []
+                for ym in sorted(hist_dict.keys()):
+                    if ym not in sp_fwd3:
+                        continue
+                    val = hist_dict[ym]
+                    if params.get("goldilocks"):
+                        s = -abs(val - test_mid) / test_scale
+                    elif params.get("invert"):
+                        s = (test_mid - val) / test_scale
+                    else:
+                        s = (val - test_mid) / test_scale
+                    s = max(-1.0, min(1.0, s))
+                    scores.append(s)
+                    fwd_returns.append(sp_fwd3[ym])
+
+                if len(scores) < 24:
+                    continue
+                # Correlation
+                import numpy as np
+                corr = float(np.corrcoef(scores, fwd_returns)[0, 1])
+                if corr > best_corr:
+                    best_corr = corr
+                    best_mid = test_mid
+                    best_scale = test_scale
+
+        # Current params correlation
+        curr_scores = []
+        curr_fwd = []
+        for ym in sorted(hist_dict.keys()):
+            if ym not in sp_fwd3:
+                continue
+            curr_scores.append(continuous_score(key, hist_dict[ym]))
+            curr_fwd.append(sp_fwd3[ym])
+        import numpy as np
+        curr_corr = float(np.corrcoef(curr_scores, curr_fwd)[0, 1]) if len(curr_scores) >= 24 else 0
+
+        diff = "OK" if abs(best_corr - curr_corr) < 0.05 else "IMPROVE"
+        results.append({
+            "key": key, "curr_mid": mid_orig, "curr_scale": scale_orig, "curr_corr": round(curr_corr, 3),
+            "best_mid": round(best_mid, 2), "best_scale": round(best_scale, 2), "best_corr": round(best_corr, 3),
+            "verdict": diff,
+        })
+        print(f"  {key:20s}  curr_corr={curr_corr:+.3f}  best_corr={best_corr:+.3f}  "
+              f"mid: {mid_orig}->{round(best_mid,2)}  scale: {scale_orig}->{round(best_scale,2)}  [{diff}]")
+
+    # Save to CSV
+    out_path = os.path.join(DATA_DIR, "score_param_validation.csv")
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv_mod.DictWriter(f, fieldnames=["key","curr_mid","curr_scale","curr_corr","best_mid","best_scale","best_corr","verdict"])
+        w.writeheader()
+        w.writerows(results)
+    print(f"\n  Results saved to {out_path}")
+    print(f"  {sum(1 for r in results if r['verdict'] == 'OK')}/{len(results)} params within 0.05 of optimal")
+
+
+def _run_walk_forward():
+    """Full walk-forward backtest: retrain HMM each month with expanding window."""
+    print("=" * 60)
+    print("  Walk-Forward Backtest (this takes 10-20 minutes)")
+    print("=" * 60)
+
+    cache_path = os.path.join(DATA_DIR, "walk_forward_cache.json")
+
+    # Fetch all long history
+    print("\n  Step 1: Fetching extended history...")
+    hmm_hist = fetch_hmm_history()
+
+    # Build full panels
+    hmm_g_series = []
+    for name, key in [("unrate","unrate"),("ic4wsa","ic4wsa_m"),("payems","payems_m"),
+                      ("umcsent","umcsent"),("cfnai","cfnai"),("permits","permits"),
+                      ("indpro","indpro_m"),("housing","housing_yoy")]:
+        hist = hmm_hist.get(key, (None, []))[1]
+        if hist and len(hist) >= 36:
+            hmm_g_series.append((name, hist))
+    hmm_i_series = []
+    for name, key in [("cpi","cpi_yoy"),("core","core_yoy"),("ppi","ppi_mom"),("reuters_crb","reuters_crb_yoy")]:
+        hist = hmm_hist.get(key, (None, []))[1]
+        if hist and len(hist) >= 36:
+            hmm_i_series.append((name, hist))
+
+    full_g_panel = _build_aligned_panel(hmm_g_series, n=580)
+    full_i_panel = _build_aligned_panel(hmm_i_series, n=580)
+    if full_g_panel is None or full_i_panel is None:
+        print("  [ERROR] Insufficient panel data"); return
+
+    n_months = len(full_g_panel)
+    print(f"  Growth panel: {full_g_panel.shape}, Inflation panel: {full_i_panel.shape}")
+
+    # Fetch S&P 500 for returns
+    sp_raw = _fred("SPASTT01USM661N", 500)
+    sp_by_ym = {d[:7]: v for d, v in sp_raw} if sp_raw else {}
+    sp_months = sorted(sp_by_ym.keys())
+    sp_rets = {}
+    for i in range(len(sp_months) - 1):
+        sp_rets[sp_months[i+1]] = round((sp_by_ym[sp_months[i+1]] - sp_by_ym[sp_months[i]]) / sp_by_ym[sp_months[i]] * 100, 2)
+
+    # Walk forward: start with first 120 months, add one each iteration
+    min_window = 120
+    results = []
+    g_dates = list(full_g_panel.index)
+    i_dates = list(full_i_panel.index)
+    shared_dates = sorted(set(g_dates) & set(i_dates))
+
+    import numpy as np
+    print(f"\n  Step 2: Running walk-forward ({n_months - min_window} iterations)...")
+
+    for t in range(min_window, len(shared_dates)):
+        window_dates = shared_dates[:t+1]
+        ym = window_dates[-1]
+
+        # Build sub-panels
+        g_sub = full_g_panel.loc[full_g_panel.index.isin(window_dates)]
+        i_sub = full_i_panel.loc[full_i_panel.index.isin(window_dates)]
+
+        if len(g_sub) < 48 or len(i_sub) < 48:
+            continue
+
+        try:
+            # Estimate DFM factors on expanding window using Kalman filter (same as main model)
+            g_dfm = _estimate_dfm(g_sub, anchor_col="payems", factor_name=None, rolling_zscore=120)
+            i_dfm = _estimate_dfm(i_sub, anchor_col="cpi", factor_name=None, rolling_zscore=120)
+            if not g_dfm or not i_dfm:
+                continue
+            g_vals = g_dfm["series"].values
+            i_vals = i_dfm["series"].values
+            # Align on shared index
+            shared_idx = sorted(set(g_dfm["series"].index) & set(i_dfm["series"].index))
+            if len(shared_idx) < 48:
+                continue
+            g_aligned = g_dfm["series"].loc[shared_idx].values
+            i_aligned = i_dfm["series"].loc[shared_idx].values
+
+            # Fit HMM on expanding window
+            X = np.column_stack([g_aligned, i_aligned])
+            model = _GaussianHMM(n_states=4, n_dim=2, n_iter=80, seed=0)
+            model.fit(X)
+
+            # Forward-only probability for the last month
+            alpha = model.predict_filtered(X)
+            current_probs = alpha[-1]
+
+            # Relabel states
+            means = model.means
+            quadrant_targets = {
+                "Early Recovery": np.array([+1, -1]), "Reflation": np.array([+1, +1]),
+                "Stagflation": np.array([-1, +1]), "Deflation": np.array([-1, -1]),
+            }
+            final_labels = {}
+            used = set()
+            for regime, target in quadrant_targets.items():
+                best_state, best_align = None, -np.inf
+                for si in range(4):
+                    if si in used: continue
+                    alignment = np.dot(means[si], target)
+                    if alignment > best_align:
+                        best_align = alignment
+                        best_state = si
+                if best_state is not None:
+                    final_labels[best_state] = regime
+                    used.add(best_state)
+
+            regime_probs = {r: 0.0 for r in REGIME_NAMES_HMM}
+            for si, p in enumerate(current_probs):
+                regime_probs[final_labels.get(si, "Deflation")] += p
+            dominant = max(regime_probs, key=regime_probs.get)
+
+            sp_ret = sp_rets.get(ym, None)
+            results.append({
+                "date": ym,
+                "regime": dominant,
+                "probs": {r: round(float(v) * 100, 1) for r, v in regime_probs.items()},
+                "sp500_return": sp_ret,
+            })
+
+            if (t - min_window) % 25 == 0:
+                print(f"    {ym}  ({t - min_window + 1}/{len(shared_dates) - min_window})  {dominant}")
+
+        except Exception as e:
+            continue
+
+    # Save cache
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+    print(f"\n  Walk-forward complete: {len(results)} months classified")
+    print(f"  Results saved to {cache_path}")
+
+    # Summary stats
+    import math
+    regime_buckets = {r: [] for r in REGIME_NAMES_HMM}
+    for r in results:
+        if r["sp500_return"] is not None:
+            regime_buckets[r["regime"]].append(r["sp500_return"])
+    print(f"\n  {'Regime':20s}  {'N':>4s}  {'Avg':>7s}  {'Sharpe':>7s}  {'Hit':>5s}")
+    for regime in REGIME_NAMES_HMM:
+        rets = regime_buckets[regime]
+        n = len(rets)
+        if n < 2: continue
+        avg = sum(rets) / n
+        std = (sum((x - avg)**2 for x in rets) / (n-1)) ** 0.5
+        sharpe = avg / std * math.sqrt(12) if std > 0 else 0
+        hit = sum(1 for x in rets if x > 0) / n * 100
+        print(f"  {regime:20s}  {n:4d}  {avg:+6.2f}%  {sharpe:+6.2f}  {hit:4.0f}%")
+
+
 def main():
     print("=" * 60)
     print("  US Economic Indicators Tracker")
@@ -3455,13 +4154,13 @@ def main():
     import_pmi_csvs()
 
     print("\nStep 1: Parsing PDF reports...")
-    mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val = parse_reports_folder()
+    mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val, spg_date, spg_val = parse_reports_folder()
 
     print("\nStep 2: Updating data log...")
-    update_manual_input(mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val)
+    update_manual_input(mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val, spg_date, spg_val)
 
     print("\nStep 2b: Updating CSV history...")
-    update_pmi_csvs(mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val)
+    update_pmi_csvs(mfg_date, mfg_val, svc_date, svc_val, chi_date, chi_val, spg_date, spg_val)
 
     # Fetch order: largest FRED pulls first to prime the cache, so subsequent
     # calls for the same series (with smaller limits) are instant cache hits.
@@ -3478,19 +4177,20 @@ def main():
         # Use whatever series are available (some may fail due to FRED API issues)
         hmm_g_series = []
         for name, key in [("unrate","unrate"),("ic4wsa","ic4wsa_m"),("payems","payems_m"),
-                          ("umcsent","umcsent"),("cfnai","cfnai"),("permits","permits")]:
+                          ("umcsent","umcsent"),("cfnai","cfnai"),("permits","permits"),
+                          ("indpro","indpro_m"),("housing","housing_yoy")]:
             hist = hmm_hist.get(key, (None, []))[1]
             if hist and len(hist) >= 36:
                 hmm_g_series.append((name, hist))
-        hmm_g_panel = _build_aligned_panel(hmm_g_series, n=220) if len(hmm_g_series) >= 3 else None
+        hmm_g_panel = _build_aligned_panel(hmm_g_series, n=700) if len(hmm_g_series) >= 3 else None
         hmm_i_series = []
-        for name, key in [("cpi","cpi_yoy"),("core","core_yoy"),("ppi","ppi_mom"),("crb","crb_yoy")]:
+        for name, key in [("cpi","cpi_yoy"),("core","core_yoy"),("ppi","ppi_mom")]:
             hist = hmm_hist.get(key, (None, []))[1]
             if hist and len(hist) >= 36:
                 hmm_i_series.append((name, hist))
-        hmm_i_panel = _build_aligned_panel(hmm_i_series, n=220) if len(hmm_i_series) >= 2 else None
-        hmm_g = _estimate_dfm(hmm_g_panel, anchor_col="payems", factor_name="HMM-Growth") if hmm_g_panel is not None else None
-        hmm_i = _estimate_dfm(hmm_i_panel, anchor_col="cpi",    factor_name="HMM-Inflation")
+        hmm_i_panel = _build_aligned_panel(hmm_i_series, n=700) if len(hmm_i_series) >= 2 else None
+        hmm_g = _estimate_dfm(hmm_g_panel, anchor_col="payems", factor_name="HMM-Growth", rolling_zscore=120) if hmm_g_panel is not None else None
+        hmm_i = _estimate_dfm(hmm_i_panel, anchor_col="cpi",    factor_name="HMM-Inflation", rolling_zscore=120)
         if hmm_g and hmm_i:
             hmm_result = estimate_hmm_regime(hmm_g["series"], hmm_i["series"])
     except Exception as e:
@@ -3520,6 +4220,12 @@ def main():
             g_series.append(("permits", dfm_hist["permit_yoy"][1]))
         if dfm_hist.get("jolts") and len(dfm_hist["jolts"][1]) >= 36:
             g_series.append(("jolts", dfm_hist["jolts"][1]))
+        if dfm_hist.get("adp_m") and len(dfm_hist["adp_m"][1]) >= 36:
+            g_series.append(("adp", dfm_hist["adp_m"][1]))
+        if dfm_hist.get("indpro_mom") and len(dfm_hist["indpro_mom"][1]) >= 36:
+            g_series.append(("indpro", dfm_hist["indpro_mom"][1]))
+        if dfm_hist.get("housing_yoy") and len(dfm_hist["housing_yoy"][1]) >= 36:
+            g_series.append(("housing", dfm_hist["housing_yoy"][1]))
         g_panel = _build_aligned_panel(g_series)
 
         # Inflation panel - original 4 + breakeven + M2
@@ -3533,6 +4239,10 @@ def main():
             i_series.append(("breakeven", dfm_hist["breakeven"][1]))
         if dfm_hist.get("m2_yoy") and len(dfm_hist["m2_yoy"][1]) >= 36:
             i_series.append(("m2", dfm_hist["m2_yoy"][1]))
+        if dfm_hist.get("pce_yoy") and len(dfm_hist["pce_yoy"][1]) >= 36:
+            i_series.append(("pce", dfm_hist["pce_yoy"][1]))
+        if dfm_hist.get("import_yoy") and len(dfm_hist["import_yoy"][1]) >= 36:
+            i_series.append(("imports", dfm_hist["import_yoy"][1]))
         i_panel = _build_aligned_panel(i_series)
 
         # Credit conditions panel - NEW in v8
@@ -3591,7 +4301,7 @@ def main():
     print("\nStep 3e: Running regime backtest vs S&P 500...")
     backtest_result = None
     if hmm_g and hmm_i:
-        backtest_result = backtest_regimes(hmm_g["series"], hmm_i["series"])
+        backtest_result = backtest_regimes(hmm_g["series"], hmm_i["series"], hmm_result)
     elif dfm_results.get("growth") and dfm_results.get("inflation"):
         backtest_result = backtest_regimes(
             dfm_results["growth"]["series"], dfm_results["inflation"]["series"])
@@ -3748,9 +4458,17 @@ if __name__ == "__main__":
                         help="Run without network - use cached FRED data only")
     parser.add_argument("--clear-cache", action="store_true",
                         help="Delete the FRED cache file and exit")
+    parser.add_argument("--validate-params", action="store_true",
+                        help="Cross-validate SCORE_PARAMS against historical S&P 500 returns")
+    parser.add_argument("--walk-forward", action="store_true",
+                        help="Run full walk-forward backtest (slow, ~15 min) and cache results")
     args = parser.parse_args()
 
-    if args.clear_cache:
+    if args.validate_params:
+        _validate_score_params()
+    elif args.walk_forward:
+        _run_walk_forward()
+    elif args.clear_cache:
         if os.path.exists(CACHE_FILE):
             os.remove(CACHE_FILE)
             print(f"  Cache cleared: {CACHE_FILE}")

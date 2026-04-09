@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Methodology - US Economic Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0b0b10; --bg-card: #131318; --bg-card2: #1a1a24;
+  --text: #f0f0f5; --text-dim: #888; --border: #1e1e2a;
+  --purple: #8a2bd0; --green: #1e8449; --red: #b03a2e; --amber: #d4870a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }
+.container { max-width: 900px; margin: 0 auto; padding: 2.5rem 2rem; }
+h1 { font-family: 'Space Grotesk', sans-serif; font-size: 2rem; margin-bottom: 0.5rem; }
+h2 { font-family: 'Space Grotesk', sans-serif; font-size: 1.3rem; color: var(--purple); margin: 2.5rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; color: #ccc; }
+p, li { color: #bbb; font-size: 0.9rem; margin-bottom: 0.6rem; }
+ul { padding-left: 1.5rem; }
+a { color: var(--purple); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.back { display: inline-block; margin-bottom: 1.5rem; font-size: 0.85rem; }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin: 1rem 0; }
+code { background: var(--bg-card2); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.82rem; color: #ccc; }
+.formula { background: var(--bg-card2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 0.75rem 0; font-family: monospace; font-size: 0.82rem; color: #ccc; white-space: pre-wrap; }
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin: 0.75rem 0; }
+th, td { padding: 0.5rem 0.75rem; border: 1px solid var(--border); text-align: left; }
+th { background: var(--bg-card2); color: #aaa; font-weight: 600; }
+td { color: #bbb; }
+.subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 2rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <a href="/" class="back">&larr; Back to Dashboard</a>
+  <h1>Methodology</h1>
+  <p class="subtitle">US Economic Indicators Tracker - Technical Documentation</p>
+
+  <h2>1. Overview</h2>
+  <p>The tracker monitors {{ data.indicators|length if data and data.indicators else 29 }} macroeconomic indicators across 5 categories (Job Market, Inflation, Economic Activities, Leading Indicators, and Market Positioning). It combines three quantitative models to classify the current economic regime and produce a forward-looking assessment:</p>
+  <ul>
+    <li><strong>Dynamic Factor Model (DFM)</strong> - extracts latent growth, inflation, and credit factors from panel data</li>
+    <li><strong>Hidden Markov Model (HMM)</strong> - probabilistic regime classification across 4 states</li>
+    <li><strong>Weighted Macro Score</strong> - continuous scoring of all indicators with timing-based weights</li>
+  </ul>
+
+  <h2>2. Indicator Coverage</h2>
+  <p>Data is sourced from the Federal Reserve Economic Data (FRED) API for 25 indicators, with 4 additional PMI indicators from PDF reports and CSV files. Each indicator is classified as:</p>
+  <table>
+    <tr><th>Type</th><th>Weight Range</th><th>Description</th></tr>
+    <tr><td style="color:var(--green)">Leading</td><td>2.0 - 3.0x</td><td>Predicts future conditions 3-12 months ahead (credit spreads, yield curve, permits, JOLTS, EPU, DXY, housing starts)</td></tr>
+    <tr><td style="color:var(--amber)">Coincident</td><td>1.5 - 2.0x</td><td>Moves in real time (ISM PMIs, payrolls, ADP, claims, industrial production, retail sales, consumer sentiment)</td></tr>
+    <tr><td style="color:var(--purple)">Lagging</td><td>1.0 - 2.0x</td><td>Confirms what has happened (unemployment, CPI, Core CPI, Core PCE, PPI, CRB commodities)</td></tr>
+  </table>
+
+  <h2>3. Continuous Scoring</h2>
+  <p>Each indicator is scored on a continuous scale from -1.0 (deeply contractionary) to +1.0 (deeply expansionary), based on its distance from a neutral midpoint:</p>
+  <div class="formula">score = clamp((value - midpoint) / scale, -1, +1)
+
+For inverted indicators (lower = better): score = clamp((midpoint - value) / scale, -1, +1)
+For goldilocks indicators (both extremes bad): score = clamp(-|value - midpoint| / scale, -1, 0)</div>
+  <p>This replaces the traditional discrete {-1, 0, +1} approach, allowing the weighted score to capture magnitude. CPI at 2.6% now scores differently from CPI at 8.0%.</p>
+
+  <h2>4. Weighted Macro Score</h2>
+  <p>The headline score is a weighted average of all continuous scores, grouped by timing tier:</p>
+  <div class="formula">score = SUM(continuous_score_i * weight_i) / SUM(weight_i)</div>
+  <p>Leading indicators receive 2-3x weight (they predict the future), coincident indicators 1.5-2x (they confirm the present), and lagging indicators 1-2x (they validate what happened). The output ranges from -1.0 to +1.0 with thresholds at +/-0.3 for expansionary/contractionary and +/-0.1 for mixed signals.</p>
+
+  <h2>5. Dynamic Factor Model (DFM)</h2>
+  <p>Three latent factors are extracted from the indicator panels using a state-space Dynamic Factor Model (Kalman filter via statsmodels). When the Kalman filter fails to converge, a PCA fallback is used.</p>
+  <h3>Growth Factor</h3>
+  <p>Estimated from: unemployment, initial claims, payrolls, ADP, consumer sentiment, CFNAI, building permits, JOLTS, industrial production, housing starts. Anchored to payrolls for sign normalisation.</p>
+  <h3>Inflation Factor</h3>
+  <p>Estimated from: CPI YoY, Core CPI YoY, Core PCE YoY, PPI MoM, CRB YoY, breakeven inflation, M2 money supply, import prices. Anchored to CPI.</p>
+  <h3>Credit Factor</h3>
+  <p>Estimated from: HY credit spread, IG credit spread, NFCI, 10Y-3M yield curve. Captures financial stress conditions.</p>
+  <h3>Rolling z-score normalisation (HMM only)</h3>
+  <p>The display DFM uses standard full-sample z-scoring. The HMM DFM uses a <strong>120-month rolling z-score</strong>: each month's value is normalised against the trailing 10-year mean and standard deviation. This ensures that "elevated inflation" means "high relative to the recent decade" rather than "high relative to the last 50 years." Without this, the 1970s-80s inflation (CPI 8-14%) would pull the baseline up so much that current 2.4% CPI would appear deflationary.</p>
+  <p>The rolling approach lets the HMM train on 550+ months of regime dynamics (including the 1970s oil shocks and Volcker disinflation) while correctly classifying current conditions relative to modern norms.</p>
+
+  <h2>6. Hidden Markov Model (HMM)</h2>
+  <p>A 4-state Gaussian HMM is fitted to the (growth factor, inflation factor) pair using the Baum-Welch (EM) algorithm. The four states correspond to the standard investment clock quadrants:</p>
+  <table>
+    <tr><th>Regime</th><th>Growth</th><th>Inflation</th><th>Typical Environment</th></tr>
+    <tr><td style="color:#27ae60">Early Recovery</td><td>Rising</td><td>Falling</td><td>Post-recession, policy easing, disinflation</td></tr>
+    <tr><td style="color:#f39c12">Reflation</td><td>Rising</td><td>Rising</td><td>Mid-cycle expansion, demand-pull inflation</td></tr>
+    <tr><td style="color:#b03a2e">Stagflation</td><td>Falling</td><td>Rising</td><td>Supply shocks, cost-push inflation, policy dilemma</td></tr>
+    <tr><td style="color:#2980b9">Deflation</td><td>Falling</td><td>Falling</td><td>Recession, demand collapse, disinflationary</td></tr>
+  </table>
+  <p>"Rising/falling" is relative to the rolling 10-year trend, not absolute levels. The DFM z-scores determine whether each factor is above or below its recent baseline.</p>
+  <h3>Implementation details</h3>
+  <ul>
+    <li><strong>Training window:</strong> ~550 months (back to ~1975) with rolling 120-month z-score normalisation. Covers both 1970s oil shocks, Volcker disinflation, and all subsequent cycles.</li>
+    <li><strong>Growth panel:</strong> 8 series - Unemployment, Claims, Payrolls, Consumer Sentiment, CFNAI, Building Permits, Industrial Production, Housing Starts</li>
+    <li><strong>Inflation panel:</strong> 3 series - CPI YoY, Core CPI YoY, PPI MoM (Reuters commodity and Core PCE excluded from HMM to avoid collinearity)</li>
+    <li><strong>Initialisation:</strong> State means placed at the 4 economic quadrants (+/-0.7 sigma), transition matrix starts at 90% persistence</li>
+    <li><strong>Regularisation:</strong> 1% minimum transition probability (no absorbing states), 0.01 covariance floor (no spike collapse)</li>
+    <li><strong>Convergence:</strong> EM stops when log-likelihood change &lt; 0.0001</li>
+    <li><strong>Model selection:</strong> Best of 6 random seeds by log-likelihood</li>
+    <li><strong>State relabeling:</strong> After EM, states are reassigned to quadrants by dot-product alignment of fitted means with target vectors</li>
+  </ul>
+  <h3>Dual-model regime classification</h3>
+  <p>Two regime views are computed and displayed side-by-side:</p>
+  <ul>
+    <li><strong>Full-sample (smoothed):</strong> Forward-backward probabilities using all available data. This is the "where we ended up" view - the best estimate of the true regime at each point in time.</li>
+    <li><strong>Walk-forward (out-of-sample):</strong> Each month classified using only data available at that time (expanding-window Kalman DFM + HMM, pre-computed via <code>--walk-forward</code> CLI). No look-ahead bias.</li>
+  </ul>
+  <h3>Transition detection</h3>
+  <p>When the two models disagree on the current regime, the economy is classified as in <strong>transition</strong>. The walk-forward shows where we ARE (real-time), the full-sample shows where we're HEADING (with hindsight). Transition is also flagged when Shannon entropy of the probability distribution exceeds a threshold (stability &lt; 80%).</p>
+
+  <h2>7. Directional Forecast</h2>
+  <p>Compares each leading indicator's current value vs its value 3 months ago. If &gt;60% of leading indicators are deteriorating (or &gt;40% with DFM momentum confirming), the outlook is "DETERIORATING". The conviction signal combines HMM confidence with forecast direction, with a conflict check: if the HMM says growth-positive but leading indicators are weakening, conviction is downgraded. When regime stability is below 50%, conviction automatically overrides to "TRANSITION."</p>
+
+  <h2>8. Regime Backtest</h2>
+  <p>S&P 500 monthly returns (OECD index, FRED: SPASTT01USM661N) are overlaid on the HMM regime classifications. When a walk-forward cache exists, the backtest uses out-of-sample classifications (green "Out-of-sample" badge). Otherwise it falls back to in-sample filtered probabilities (amber "In-sample" badge). Per-regime statistics include average monthly return, annualised Sharpe ratio, and hit rate.</p>
+
+  <h2>9. Data Quality</h2>
+  <ul>
+    <li><strong>Traffic light freshness:</strong> Green (up to date), amber (old but latest available for this indicator), red (staler than expected - possible fetch error)</li>
+    <li><strong>Anomaly detection:</strong> Values &gt;4 sigma from recent 12-month history are flagged with a warning icon</li>
+    <li><strong>PDF parsing:</strong> ISM Manufacturing, ISM Services, Chicago PMI, and S&P Global Services PMI are extracted from press release PDFs using regex pattern matching</li>
+    <li><strong>Alert system:</strong> Regime changes, macro score shifts &gt;0.15, and outlook changes are logged and displayed as dashboard banners</li>
+  </ul>
+
+  <h2>10. Limitations and Caveats</h2>
+  <ul>
+    <li>The rolling 120-month z-score means the inflation factor is sensitive to whether the trailing window includes abnormal periods (e.g., the 2021-22 spike). This is by design - "elevated" means "relative to the recent decade" - but can produce counterintuitive results when the recent decade itself was unusual.</li>
+    <li>The model cannot predict exogenous shocks (geopolitical events, pandemics, sudden policy changes). The EPU index provides partial warning but reacts to events rather than predicting them.</li>
+    <li>Continuous scoring midpoints and scales are judgment-based, not empirically optimised (validation available via <code>--validate-params</code>). They reflect conventional macro thresholds.</li>
+    <li>The walk-forward backtest retrains the Kalman DFM + HMM each month (genuine out-of-sample), but uses latest-revised FRED data rather than real-time vintages. Historical classifications may differ from what would have been computed in real time.</li>
+    <li>The walk-forward and full-sample models can disagree on the current regime. This is treated as a feature (transition detection) rather than a bug, but means the "primary" regime depends on which model you trust more.</li>
+    <li>The sector playbook uses the full-sample regime for allocation recommendations. During transitions, the probability-weighted portfolio allocation is more appropriate than the single-regime playbook.</li>
+  </ul>
+
+  <div style="margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border); font-size:0.75rem; color:var(--text-dim); text-align:center">
+    US Economic Indicators Tracker &middot; Data: <a href="https://fred.stlouisfed.org">FRED</a>, <a href="https://www.ismworld.org">ISM</a>, <a href="https://www.mni-indicators.com">MNI</a>, <a href="https://www.pmi.spglobal.com">S&P Global</a>
+    &middot; <a href="/">Back to Dashboard</a>
+    <div style="margin-top:0.6rem">
+      Created by <a href="https://www.linkedin.com/in/joseph-gregory-neary" target="_blank" rel="noopener" style="color:var(--purple); font-weight:600">Joe Neary</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>
